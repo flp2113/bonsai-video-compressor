@@ -14,6 +14,7 @@ Started from the system tray drop window or the Explorer right-click menu.
 - `npm run tauri dev` — run app with hot reload
 - `npm run check` — Svelte/TS type check
 - `cargo test --manifest-path src-tauri/Cargo.toml` — Rust unit tests
+- `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored` — slow real-ffmpeg encode test (needs sidecars)
 - `npm run tauri build` — release installer
 
 ## Git workflow

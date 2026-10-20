@@ -22,6 +22,8 @@ pub struct DurationWarning {
 pub struct Preset {
     pub id: &'static str,
     pub label: &'static str,
+    /// Appended to output file names: `clip.mov` → `clip_discord.mp4`.
+    pub suffix: &'static str,
     pub budget: Budget,
     /// Limit on the *short* edge (720 = "720p"), so portrait and landscape videos are treated alike.
     pub max_short_edge: u32,
@@ -38,6 +40,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "discord-free",
         label: "Discord Free",
+        suffix: "discord",
         budget: Budget::MaxBytes(20 * MB),
         max_short_edge: 1080,
         max_fps: 60.0,
@@ -47,6 +50,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "discord-nitro-basic",
         label: "Discord Nitro Basic",
+        suffix: "discord-basic",
         budget: Budget::MaxBytes(50 * MB),
         max_short_edge: 1080,
         max_fps: 60.0,
@@ -56,6 +60,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "discord-nitro",
         label: "Discord Nitro",
+        suffix: "discord-nitro",
         budget: Budget::MaxBytes(500 * MB),
         max_short_edge: 1080,
         max_fps: 60.0,
@@ -65,6 +70,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "x",
         label: "X / Twitter",
+        suffix: "x",
         budget: Budget::MaxBytes(512 * MB),
         max_short_edge: 1080,
         max_fps: 60.0,
@@ -77,6 +83,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "instagram",
         label: "Instagram",
+        suffix: "instagram",
         budget: Budget::Quality { kbps_1080p30: 5_000 },
         max_short_edge: 1080,
         max_fps: 30.0,
@@ -86,6 +93,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "youtube",
         label: "YouTube",
+        suffix: "youtube",
         budget: Budget::Quality { kbps_1080p30: 12_000 },
         max_short_edge: 2160,
         max_fps: 60.0,

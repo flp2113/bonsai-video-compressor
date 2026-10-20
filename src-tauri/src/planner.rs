@@ -36,6 +36,8 @@ pub struct EncodePlan {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
+    /// `Some(fps)` only when we change the frame rate; `None` keeps the source's timing untouched.
+    pub target_fps: Option<f64>,
     pub video_kbps: u32,
     pub audio_kbps: u32,
     pub estimated_bytes: u64,
@@ -157,7 +159,8 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
         }
     };
 
-    if fps < source_fps - 0.5 {
+    let fps_lowered = fps < source_fps - 0.5;
+    if fps_lowered {
         warnings.push(format!("Frame rate lowered to {} fps", fps.round()));
     }
 
@@ -166,6 +169,7 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
         width,
         height,
         fps,
+        target_fps: fps_lowered.then_some(fps),
         video_kbps: video_kbps.round() as u32,
         audio_kbps: audio_kbps.round() as u32,
         estimated_bytes: ((video_kbps + audio_kbps) * 1000.0 / 8.0 * info.duration_s + OVERHEAD_BYTES) as u64,
@@ -179,6 +183,7 @@ fn copy_plan(info: &VideoInfo, fps: f64, warnings: Vec<String>) -> EncodePlan {
         width: info.width,
         height: info.height,
         fps,
+        target_fps: None,
         video_kbps: info.bitrate_kbps.saturating_sub(info.audio_bitrate_kbps.unwrap_or(0)),
         audio_kbps: info.audio_bitrate_kbps.unwrap_or(0),
         estimated_bytes: info.size_bytes,
