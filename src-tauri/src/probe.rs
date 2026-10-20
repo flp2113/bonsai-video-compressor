@@ -7,9 +7,10 @@
 use serde::{Deserialize, Serialize};
 use tauri_plugin_shell::ShellExt;
 
-/// What we send to the UI. `#[serde(rename_all = "camelCase")]` turns `size_bytes`
-/// into `sizeBytes` in JSON, so it feels native on the TypeScript side.
-#[derive(Debug, Serialize, PartialEq)]
+/// What we send to the UI (and the UI sends back when asking for a plan).
+/// `#[serde(rename_all = "camelCase")]` turns `size_bytes` into `sizeBytes` in JSON,
+/// so it feels native on the TypeScript side.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoInfo {
     pub path: String,

@@ -2,12 +2,19 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { VIDEO_EXTENSIONS, type VideoInfo } from "$lib/types";
+  import { VIDEO_EXTENSIONS, type EncodePlan, type PresetSummary, type VideoInfo } from "$lib/types";
 
   let info = $state<VideoInfo | null>(null);
   let error = $state("");
   let loading = $state(false);
   let dragging = $state(false);
+
+  let presets = $state<PresetSummary[]>([]);
+  let presetId = $state("discord-free");
+  let plan = $state<EncodePlan | null>(null);
+  let planError = $state("");
+
+  invoke<PresetSummary[]>("list_presets").then((list) => (presets = list));
 
   async function load(path: string) {
     loading = true;
@@ -21,6 +28,20 @@
       loading = false;
     }
   }
+
+  // Re-plan whenever the video or the selected preset changes.
+  $effect(() => {
+    plan = null;
+    planError = "";
+    if (!info) return;
+    let stale = false;
+    invoke<EncodePlan>("plan_compression", { info, presetId })
+      .then((p) => !stale && (plan = p))
+      .catch((e) => !stale && (planError = String(e)));
+    return () => {
+      stale = true;
+    };
+  });
 
   async function chooseFile() {
     const path = await open({
@@ -88,6 +109,33 @@
         </dd>
       </dl>
     </section>
+
+    <section class="presets" aria-label="Presets">
+      {#each presets as preset (preset.id)}
+        <button class:selected={preset.id === presetId} onclick={() => (presetId = preset.id)}>
+          <strong>{preset.label}</strong>
+          <span>{preset.hint}</span>
+        </button>
+      {/each}
+    </section>
+
+    {#if planError}
+      <p class="error">{planError}</p>
+    {:else if plan}
+      <section class="card plan">
+        {#if plan.mode === "copy"}
+          <p>Already fits: will be copied without re-encoding ({megabytes(plan.estimatedBytes)}).</p>
+        {:else}
+          <p>
+            {plan.width}×{plan.height} · {Math.round(plan.fps)} fps ·
+            {(plan.videoKbps / 1000).toFixed(2)} Mbps · ≈{megabytes(plan.estimatedBytes)}
+          </p>
+        {/if}
+        {#each plan.warnings as warning}
+          <p class="warning">{warning}</p>
+        {/each}
+      </section>
+    {/if}
   {/if}
 </main>
 
@@ -186,5 +234,42 @@
   }
   dd {
     margin: 0;
+  }
+
+  .presets {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .presets button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .presets button span {
+    color: var(--muted);
+  }
+  .presets button.selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .plan p {
+    margin: 0;
+  }
+  .plan .warning {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
   }
 </style>
