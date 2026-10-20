@@ -2,7 +2,8 @@
 name = "bonsai"
 version = "0.1.0"
 description = "Lightweight preset-based video compressor"
-authors = ["Felipe Maia"]
+authors = ["Felipe Guerzoni"]
+repository = "https://github.com/flp2113/bonsai-video-compressor"
 license = "MIT"
 edition = "2024"
 
