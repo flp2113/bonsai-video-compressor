@@ -28,7 +28,10 @@
   let done = $state<JobDone | null>(null);
   let jobError = $state("");
 
+  let encoderLabel = $state("");
+
   invoke<PresetSummary[]>("list_presets").then((list) => (presets = list));
+  invoke<string>("get_encoder").then((label) => (encoderLabel = label));
 
   async function load(path: string) {
     if (job) return; // don't swap the video out from under a running job
@@ -66,7 +69,7 @@
     jobError = "";
     try {
       const jobId = await invoke<number>("compress", { info, presetId });
-      job = { jobId, percent: 0, speed: null };
+      job = { jobId, percent: 0, speed: null, pass: 1 };
       // A very fast job (e.g. a copy) may have finished before we even learned its id.
       earlyFinish.get(jobId)?.();
       earlyFinish.clear();
@@ -183,6 +186,9 @@
         </button>
       {/each}
     </section>
+    {#if encoderLabel}
+      <p class="encoder">Encoder: {encoderLabel}</p>
+    {/if}
 
     {#if planError}
       <p class="error">{planError}</p>
@@ -207,6 +213,9 @@
           <span>{Math.floor(job.percent)}%{job.speed ? ` · ${job.speed.toFixed(1)}×` : ""}</span>
           <button class="secondary" onclick={cancel}>Cancel</button>
         </section>
+        {#if job.pass > 1}
+          <p class="encoder">Slightly over the limit, re-encoding to fit (pass {job.pass})…</p>
+        {/if}
       {:else}
         <button class="primary" onclick={compress}>Compress</button>
       {/if}
@@ -221,9 +230,7 @@
         <p>
           Saved <strong>{fileName(done.outputPath)}</strong> · {megabytes(done.sizeBytes)}
         </p>
-        {#if done.overCap}
-          <p class="warning">Came out slightly over the size limit. Automatic retry is coming in the next update.</p>
-        {/if}
+        <p class="encoder">{done.encoder === "Copied" ? "Copied without re-encoding" : `Encoded with ${done.encoder}`}</p>
         <button class="secondary" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
       </section>
     {/if}
@@ -410,6 +417,11 @@
     height: 100%;
     background: var(--accent);
     transition: width 0.2s;
+  }
+  .encoder {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
   }
   .plan .warning {
     margin-top: 6px;

@@ -5,11 +5,85 @@ use std::path::{Path, PathBuf};
 
 use crate::planner::{EncodePlan, Mode};
 
-/// Video encoder for now: Windows Media Foundation's H.264 encoder. It ships with every Windows 10/11,
-/// is LGPL-safe, and Windows covers H.264 patent licensing. Measured ~2% bitrate overshoot at the
-/// resolutions the planner picks (well inside its 4% safety margin).
-/// Milestone 5 adds NVIDIA/Intel/AMD hardware encoders in front of it.
-const VIDEO_ENCODER: &str = "h264_mf";
+/// The H.264 encoders we can use, in order of preference.
+/// `#[derive(Clone, Copy)]` lets us pass it around by value like a number (it holds no data).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VideoEncoder {
+    Nvenc,
+    Qsv,
+    Amf,
+    /// Windows Media Foundation: ships with every Windows 10/11, LGPL-safe, Windows covers H.264
+    /// patent licensing. Always available, so it's the fallback.
+    MediaFoundation,
+}
+
+impl VideoEncoder {
+    /// Hardware encoders worth probing, best first. `MediaFoundation` is the fallback, not probed.
+    pub const HARDWARE: [VideoEncoder; 3] = [VideoEncoder::Nvenc, VideoEncoder::Qsv, VideoEncoder::Amf];
+
+    pub fn ffmpeg_name(self) -> &'static str {
+        match self {
+            VideoEncoder::Nvenc => "h264_nvenc",
+            VideoEncoder::Qsv => "h264_qsv",
+            VideoEncoder::Amf => "h264_amf",
+            VideoEncoder::MediaFoundation => "h264_mf",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoEncoder::Nvenc => "NVIDIA NVENC",
+            VideoEncoder::Qsv => "Intel Quick Sync",
+            VideoEncoder::Amf => "AMD AMF",
+            VideoEncoder::MediaFoundation => "Windows (software)",
+        }
+    }
+
+    /// We ask each encoder for slightly less than the budget to absorb its typical overshoot.
+    /// Measured on a noisy 20 s clip at 300k/1200k/2400k (RTX 3060 Ti, Oct 2026):
+    /// NVENC CBR + multipass: +0.3..+1.1%; Media Foundation CBR: ~+2%.
+    /// QSV/AMF are untested (no hardware here), so they get a conservative 5%.
+    fn bitrate_scale(self) -> f64 {
+        match self {
+            VideoEncoder::Nvenc => 0.99,
+            VideoEncoder::MediaFoundation => 0.98,
+            VideoEncoder::Qsv | VideoEncoder::Amf => 0.95,
+        }
+    }
+
+    /// Encoder-specific flags for a target video bitrate.
+    fn args(self, video_kbps: u32) -> Vec<String> {
+        let kbps = (video_kbps as f64 * self.bitrate_scale()).round() as u32;
+        let rate = format!("{kbps}k");
+        let buffer = format!("{}k", kbps * 2);
+        let flags: Vec<&str> = match self {
+            // CBR + full-res multipass hit size targets within ~1%; VBR with a looser maxrate overshot 4-9%.
+            VideoEncoder::Nvenc => vec!["-preset", "p5", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres",
+                "-spatial-aq", "1", "-pix_fmt", "yuv420p", "-b:v", &rate, "-bufsize", &buffer],
+            // UNTESTED: maxrate = bitrate makes QSV use CBR, per FFmpeg's QSV docs.
+            VideoEncoder::Qsv => vec!["-preset", "slow", "-pix_fmt", "nv12", "-b:v", &rate, "-maxrate", &rate,
+                "-bufsize", &buffer],
+            // UNTESTED: AMF's constant-bitrate mode.
+            VideoEncoder::Amf => vec!["-quality", "quality", "-rc", "cbr", "-pix_fmt", "nv12", "-b:v", &rate,
+                "-bufsize", &buffer],
+            // h264_mf ignored `-rate_control` in tests (all modes gave identical files); cbr kept for clarity.
+            VideoEncoder::MediaFoundation => vec!["-rate_control", "cbr", "-scenario", "archive", "-pix_fmt", "nv12",
+                "-b:v", &rate],
+        };
+        let mut args = vec!["-c:v".to_string(), self.ffmpeg_name().to_string()];
+        args.extend(flags.into_iter().map(String::from));
+        args
+    }
+}
+
+/// ffmpeg arguments that try a 1-frame encode: succeeds only if the GPU + driver support this encoder.
+pub fn probe_encoder_args(encoder: VideoEncoder) -> Vec<String> {
+    ["-hide_banner", "-v", "error", "-f", "lavfi", "-i", "color=black:s=256x256:d=0.1", "-frames:v", "1"]
+        .into_iter()
+        .chain(["-c:v", encoder.ffmpeg_name(), "-f", "null", "-"])
+        .map(String::from)
+        .collect()
+}
 
 /// `clip.mov` → `clip_discord.mp4` in the same folder. If that's taken (or would be the input itself),
 /// tries `clip_discord (2).mp4`, `(3)`, ... We never overwrite anything.
@@ -29,7 +103,7 @@ pub fn output_path(input: &Path, suffix: &str, exists: impl Fn(&Path) -> bool) -
     candidate
 }
 
-pub fn build_args(input: &str, output: &str, plan: &EncodePlan) -> Vec<String> {
+pub fn build_args(input: &str, output: &str, plan: &EncodePlan, encoder: VideoEncoder) -> Vec<String> {
     // `-v error` keeps stderr down to real problems, which we show to the user if ffmpeg fails.
     let mut args: Vec<String> = ["-hide_banner", "-v", "error", "-nostdin", "-y", "-i", input, "-map", "0:v:0"]
         .iter()
@@ -46,20 +120,8 @@ pub fn build_args(input: &str, output: &str, plan: &EncodePlan) -> Vec<String> {
             if let Some(fps) = plan.target_fps {
                 filters.push_str(&format!(",fps={fps}"));
             }
-            args.extend([
-                "-vf".into(),
-                filters,
-                "-c:v".into(),
-                VIDEO_ENCODER.into(),
-                "-rate_control".into(),
-                "cbr".into(),
-                "-scenario".into(),
-                "archive".into(),
-                "-pix_fmt".into(),
-                "nv12".into(),
-                "-b:v".into(),
-                format!("{}k", plan.video_kbps),
-            ]);
+            args.extend(["-vf".into(), filters]);
+            args.extend(encoder.args(plan.video_kbps));
             if plan.audio_kbps > 0 {
                 args.extend(["-map".into(), "0:a:0".into(), "-c:a".into(), "aac".into()]);
                 args.extend(["-b:a".into(), format!("{}k", plan.audio_kbps), "-ac".into(), "2".into()]);
@@ -98,6 +160,16 @@ pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
 
 pub fn percent(out_time_us: i64, duration_s: f64) -> f64 {
     (out_time_us as f64 / 1_000_000.0 / duration_s * 100.0).clamp(0.0, 100.0)
+}
+
+/// Video bitrate for the next attempt after an output came out too big.
+/// Scales by how far off we were (estimated / actual) with an extra 3% safety margin.
+/// Only the video share is reduced; the audio bitrate stays as planned.
+/// `estimated_bytes` stays the original target across retries, so calling this again after a second
+/// attempt (with the lowered `video_kbps`) corrects from where that attempt landed.
+pub fn retry_video_kbps(plan: &EncodePlan, actual_bytes: u64) -> u32 {
+    let ratio = plan.estimated_bytes as f64 / actual_bytes as f64;
+    (plan.video_kbps as f64 * ratio * 0.97).floor() as u32
 }
 
 #[cfg(test)]
@@ -143,26 +215,54 @@ mod tests {
         assert_ne!(output_path(input, "discord", |_| false), input);
     }
 
+    const MF: VideoEncoder = VideoEncoder::MediaFoundation;
+
     #[test]
     fn encode_args_contain_scale_bitrates_and_audio() {
-        let args = build_args("in.mov", "out.mp4", &encode_plan(128, None));
+        let args = build_args("in.mov", "out.mp4", &encode_plan(128, None), MF);
         assert!(has_pair(&args, "-vf", "scale=1280:720"));
         assert!(has_pair(&args, "-c:v", "h264_mf"));
-        assert!(has_pair(&args, "-b:v", "2400k"));
+        assert!(has_pair(&args, "-b:v", "2352k")); // 2400 × 0.98 overshoot allowance
         assert!(has_pair(&args, "-b:a", "128k"));
         assert!(has_pair(&args, "-i", "in.mov"));
         assert_eq!(args.last().unwrap(), "out.mp4");
     }
 
     #[test]
+    fn nvenc_uses_cbr_multipass_with_scaled_bitrate() {
+        let args = build_args("in.mp4", "out.mp4", &encode_plan(128, None), VideoEncoder::Nvenc);
+        assert!(has_pair(&args, "-c:v", "h264_nvenc"));
+        assert!(has_pair(&args, "-rc", "cbr"));
+        assert!(has_pair(&args, "-multipass", "fullres"));
+        assert!(has_pair(&args, "-b:v", "2376k")); // 2400 × 0.99
+    }
+
+    #[test]
+    fn every_encoder_sets_its_codec_and_a_bitrate() {
+        for encoder in VideoEncoder::HARDWARE.into_iter().chain([MF]) {
+            let args = build_args("in.mp4", "out.mp4", &encode_plan(128, None), encoder);
+            assert!(has_pair(&args, "-c:v", encoder.ffmpeg_name()), "{encoder:?}");
+            assert!(args.contains(&"-b:v".to_string()), "{encoder:?}");
+        }
+    }
+
+    #[test]
+    fn probe_args_try_one_frame_with_the_encoder() {
+        let args = probe_encoder_args(VideoEncoder::Qsv);
+        assert!(has_pair(&args, "-c:v", "h264_qsv"));
+        assert!(has_pair(&args, "-frames:v", "1"));
+        assert!(has_pair(&args, "-f", "null"));
+    }
+
+    #[test]
     fn fps_filter_only_when_frame_rate_is_lowered() {
-        let args = build_args("in.mp4", "out.mp4", &encode_plan(128, Some(30.0)));
+        let args = build_args("in.mp4", "out.mp4", &encode_plan(128, Some(30.0)), MF);
         assert!(has_pair(&args, "-vf", "scale=1280:720,fps=30"));
     }
 
     #[test]
     fn no_audio_means_an_flag() {
-        let args = build_args("in.mp4", "out.mp4", &encode_plan(0, None));
+        let args = build_args("in.mp4", "out.mp4", &encode_plan(0, None), MF);
         assert!(args.contains(&"-an".to_string()));
         assert!(!args.contains(&"-b:a".to_string()));
     }
@@ -171,9 +271,20 @@ mod tests {
     fn copy_mode_does_not_reencode() {
         let mut plan = encode_plan(128, None);
         plan.mode = Mode::Copy;
-        let args = build_args("in.mp4", "out.mp4", &plan);
+        let args = build_args("in.mp4", "out.mp4", &plan, MF);
         assert!(has_pair(&args, "-c", "copy"));
         assert!(!args.contains(&"-vf".to_string()));
+    }
+
+    #[test]
+    fn retry_lowers_video_bitrate_proportionally() {
+        let mut plan = encode_plan(128, None);
+        plan.estimated_bytes = 19_200_000;
+        // 10% over → 2400 × (19.2 / 21.12) × 0.97 = 2116
+        assert_eq!(retry_video_kbps(&plan, 21_120_000), 2116);
+        // A second retry starts from the already-lowered bitrate.
+        plan.video_kbps = 2116;
+        assert!(retry_video_kbps(&plan, 19_500_000) < 2116);
     }
 
     #[test]
@@ -193,15 +304,34 @@ mod tests {
     }
 
     /// Real end-to-end encode with the sidecar ffmpeg. Slow, so opt-in: `cargo test -- --ignored`.
+    /// Uses the best hardware encoder this machine has (falls back to Media Foundation).
     #[test]
     #[ignore]
-    fn real_encode_fits_discord_free() {
+    fn real_encode_fits_discord_free_best_encoder() {
+        let ffmpeg = sidecar("ffmpeg");
+        let best = VideoEncoder::HARDWARE
+            .into_iter()
+            .find(|&e| std::process::Command::new(&ffmpeg).args(probe_encoder_args(e)).status().unwrap().success())
+            .unwrap_or(MF);
+        real_encode_fits_discord_free(best);
+    }
+
+    #[test]
+    #[ignore]
+    fn real_encode_fits_discord_free_media_foundation() {
+        real_encode_fits_discord_free(MF);
+    }
+
+    fn sidecar(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries").join(format!("{name}-x86_64-pc-windows-msvc.exe"))
+    }
+
+    fn real_encode_fits_discord_free(encoder: VideoEncoder) {
         use std::process::Command;
 
-        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        let ffmpeg = bin.join("ffmpeg-x86_64-pc-windows-msvc.exe");
-        let ffprobe = bin.join("ffprobe-x86_64-pc-windows-msvc.exe");
-        let dir = std::env::temp_dir().join(format!("bonsai-it-{}", std::process::id()));
+        let ffmpeg = sidecar("ffmpeg");
+        let ffprobe = sidecar("ffprobe");
+        let dir = std::env::temp_dir().join(format!("bonsai-it-{}-{}", std::process::id(), encoder.ffmpeg_name()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.mp4");
 
@@ -225,14 +355,17 @@ mod tests {
 
         let out = dir.join("out.mp4");
         let status = Command::new(&ffmpeg)
-            .args(build_args(src.to_str().unwrap(), out.to_str().unwrap(), &plan))
+            .args(build_args(src.to_str().unwrap(), out.to_str().unwrap(), &plan, encoder))
             .stdout(std::process::Stdio::null())
             .status()
             .unwrap();
         assert!(status.success());
 
         let out_size = std::fs::metadata(&out).unwrap().len();
-        println!("plan {}x{} @ {} kbps, estimated {} B, actual {} B", plan.width, plan.height, plan.video_kbps, plan.estimated_bytes, out_size);
+        println!(
+            "{}: plan {}x{} @ {} kbps, estimated {} B, actual {} B",
+            encoder.label(), plan.width, plan.height, plan.video_kbps, plan.estimated_bytes, out_size
+        );
         std::fs::remove_dir_all(&dir).ok();
         assert!(out_size <= 20_000_000, "output {out_size} bytes exceeds 20 MB");
     }

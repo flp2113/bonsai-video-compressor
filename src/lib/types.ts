@@ -37,13 +37,16 @@ export interface JobProgress {
   jobId: number;
   percent: number;
   speed: number | null;
+  /** 1 for the first encode; 2-3 while re-encoding to fit the size limit. */
+  pass: number;
 }
 
 export interface JobDone {
   jobId: number;
   outputPath: string;
   sizeBytes: number;
-  overCap: boolean;
+  /** e.g. "NVIDIA NVENC", or "Copied" when nothing was re-encoded. */
+  encoder: string;
 }
 
 export interface JobError {

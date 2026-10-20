@@ -1,9 +1,11 @@
 //! Runs ffmpeg in the background, reports progress to the UI, and supports cancelling.
 //!
-//! Flow: `compress` starts ffmpeg and immediately returns a job id. A background task then reads
-//! ffmpeg's output and emits events the UI listens to: `job-progress`, `job-done`, `job-error`.
+//! Flow: `compress` plans the job and immediately returns a job id. A background task then runs one or
+//! more ffmpeg *passes* and emits events the UI listens to: `job-progress`, `job-done`, `job-error`.
+//! - If a hardware encoder fails, the pass is re-run with Windows' software encoder.
+//! - If a size-limited output comes out too big, it is re-encoded at a corrected bitrate (up to 2 retries).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -12,21 +14,37 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::OnceCell;
 
-use crate::encoder::{self, ProgressLine};
+use crate::encoder::{self, ProgressLine, VideoEncoder};
+use crate::planner::{self, EncodePlan, Mode};
 use crate::presets::{self, Budget};
 use crate::probe::VideoInfo;
-use crate::planner;
+
+/// Most passes a job may take: the first encode plus two size-correcting retries.
+const MAX_PASSES: u8 = 3;
 
 /// Shared app state for running jobs, registered once with `app.manage(Jobs::default())`.
 ///
 /// Tauri may run commands on several threads at once, so shared data must be thread-safe:
 /// - `AtomicU32` is a number that can be incremented safely from any thread.
-/// - `Mutex<T>` lets only one thread at a time touch the `HashMap` inside (`.lock()` waits for its turn).
+/// - `Mutex<T>` lets only one thread at a time touch the data inside (`.lock()` waits for its turn).
+/// - `OnceCell<T>` is filled exactly once (the first caller runs the detection, everyone else waits for it).
 #[derive(Default)]
 pub struct Jobs {
     next_id: AtomicU32,
+    /// The ffmpeg process currently running for each job.
     running: Mutex<HashMap<u32, CommandChild>>,
+    /// Jobs the user cancelled. A set (not just "remove from `running`") because a cancel can arrive
+    /// between two passes, when no ffmpeg is running.
+    cancelled: Mutex<HashSet<u32>>,
+    encoder: OnceCell<VideoEncoder>,
+}
+
+impl Jobs {
+    fn is_cancelled(&self, job_id: u32) -> bool {
+        self.cancelled.lock().unwrap().contains(&job_id)
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -35,6 +53,8 @@ struct JobProgress {
     job_id: u32,
     percent: f64,
     speed: Option<f64>,
+    /// 1 for the first encode; 2-3 while re-encoding to fit the size limit.
+    pass: u8,
 }
 
 #[derive(Clone, Serialize)]
@@ -43,8 +63,8 @@ struct JobDone {
     job_id: u32,
     output_path: String,
     size_bytes: u64,
-    /// Output ended up over the preset's size limit (milestone 5 will retry automatically).
-    over_cap: bool,
+    /// Which encoder produced the file, e.g. "NVIDIA NVENC" (or "Copied" when nothing was re-encoded).
+    encoder: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -53,6 +73,33 @@ struct JobError {
     job_id: u32,
     message: String,
     cancelled: bool,
+}
+
+/// Picks the best encoder by trying a 1-frame encode with each hardware encoder in turn.
+async fn detect_encoder(app: &AppHandle) -> VideoEncoder {
+    for candidate in VideoEncoder::HARDWARE {
+        let Ok(command) = app.shell().sidecar("ffmpeg") else { break };
+        let works = command
+            .args(encoder::probe_encoder_args(candidate))
+            .output()
+            .await
+            .is_ok_and(|out| out.status.success());
+        if works {
+            return candidate;
+        }
+    }
+    VideoEncoder::MediaFoundation
+}
+
+/// The detected encoder; the first call runs detection, later calls reuse the answer.
+pub async fn best_encoder(app: &AppHandle) -> VideoEncoder {
+    *app.state::<Jobs>().encoder.get_or_init(|| detect_encoder(app)).await
+}
+
+/// For the UI: "NVIDIA NVENC", "Windows (software)", ...
+#[tauri::command]
+pub async fn get_encoder(app: AppHandle) -> &'static str {
+    best_encoder(&app).await.label()
 }
 
 /// Starts compressing and returns the job id right away; results arrive as events.
@@ -66,51 +113,120 @@ pub async fn compress(
     let preset = presets::find(&preset_id).ok_or_else(|| format!("Unknown preset '{preset_id}'"))?;
     let plan = planner::plan(&info, preset)?;
     let output = encoder::output_path(Path::new(&info.path), preset.suffix, |p| p.exists());
-    let output = output.to_string_lossy().into_owned();
     let cap = match preset.budget {
         Budget::MaxBytes(bytes) => Some(bytes),
         Budget::Quality { .. } => None,
     };
-
-    let (rx, child) = app
-        .shell()
-        .sidecar("ffmpeg")
-        .map_err(|e| e.to_string())?
-        .args(encoder::build_args(&info.path, &output, &plan))
-        .spawn()
-        .map_err(|e| format!("Failed to start ffmpeg: {e}"))?;
+    let encoder = best_encoder(&app).await;
 
     let job_id = jobs.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-    jobs.running.lock().unwrap().insert(job_id, child);
+    let job = Job { job_id, info, plan, output: output.to_string_lossy().into_owned(), cap, encoder };
 
-    // Hand the rest off to a background task so this command returns immediately.
-    // `move` gives the task its own copies/ownership of the variables it uses.
-    tauri::async_runtime::spawn(watch_job(app, rx, job_id, info.duration_s, output, cap));
+    // Hand the work to a background task so this command returns immediately.
+    tauri::async_runtime::spawn(run_job(app, job));
     Ok(job_id)
 }
 
-/// Stops a running job. The background task notices ffmpeg died and cleans up.
+/// Stops a job, whether ffmpeg is mid-pass or the job is between passes.
 #[tauri::command]
 pub fn cancel(jobs: State<'_, Jobs>, job_id: u32) -> Result<(), String> {
-    // Removing the child from the map is also how `watch_job` knows this was a cancel, not a crash.
+    jobs.cancelled.lock().unwrap().insert(job_id);
     let child = jobs.running.lock().unwrap().remove(&job_id);
     match child {
         Some(child) => child.kill().map_err(|e| e.to_string()),
-        None => Ok(()), // already finished
+        None => Ok(()),
     }
 }
 
-async fn watch_job(
-    app: AppHandle,
-    mut rx: tauri::async_runtime::Receiver<CommandEvent>,
+/// Everything a background job needs, bundled so it can be moved into the task in one piece.
+struct Job {
     job_id: u32,
-    duration_s: f64,
+    info: VideoInfo,
+    plan: EncodePlan,
     output: String,
     cap: Option<u64>,
-) {
+    encoder: VideoEncoder,
+}
+
+enum PassOutcome {
+    Finished,
+    Failed(String),
+    Cancelled,
+}
+
+/// Runs passes until the output is good, the job fails, or it's cancelled.
+/// `mut job` = this function owns the job and may change it (e.g. lower the bitrate between passes).
+async fn run_job(app: AppHandle, mut job: Job) {
+    let mut pass = 1;
+    let result: Result<u64, (String, bool)> = loop {
+        let args = encoder::build_args(&job.info.path, &job.output, &job.plan, job.encoder);
+        match run_pass(&app, job.job_id, args, job.info.duration_s, pass).await {
+            PassOutcome::Cancelled => break Err(("Cancelled".into(), true)),
+            PassOutcome::Failed(detail) => {
+                // Hardware encoders can fail on odd inputs or driver problems: fall back to software once.
+                if job.plan.mode == Mode::Encode && job.encoder != VideoEncoder::MediaFoundation {
+                    job.encoder = VideoEncoder::MediaFoundation;
+                    continue;
+                }
+                break Err((format!("Compression failed: {detail}"), false));
+            }
+            PassOutcome::Finished => {}
+        }
+
+        let size = std::fs::metadata(&job.output).map(|m| m.len()).unwrap_or(0);
+        match job.cap {
+            // Too big (only possible when re-encoding: copies are only chosen when they already fit).
+            Some(cap) if size > cap && job.plan.mode == Mode::Encode => {
+                if pass >= MAX_PASSES {
+                    break Err((format!("Couldn't fit this video under {}", presets::format_mb(cap)), false));
+                }
+                job.plan.video_kbps = encoder::retry_video_kbps(&job.plan, size);
+                pass += 1;
+            }
+            _ => break Ok(size),
+        }
+    };
+
+    let jobs = app.state::<Jobs>();
+    jobs.cancelled.lock().unwrap().remove(&job.job_id);
+
+    match result {
+        Ok(size_bytes) => {
+            let encoder = if job.plan.mode == Mode::Copy { "Copied" } else { job.encoder.label() };
+            let done = JobDone { job_id: job.job_id, output_path: job.output, size_bytes, encoder };
+            let _ = app.emit("job-done", done);
+        }
+        Err((message, cancelled)) => {
+            let _ = std::fs::remove_file(&job.output); // never leave a broken or oversized file behind
+            let _ = app.emit("job-error", JobError { job_id: job.job_id, message, cancelled });
+        }
+    }
+}
+
+/// One ffmpeg run, streaming progress events until it exits.
+async fn run_pass(app: &AppHandle, job_id: u32, args: Vec<String>, duration_s: f64, pass: u8) -> PassOutcome {
+    let jobs = app.state::<Jobs>();
+    if jobs.is_cancelled(job_id) {
+        return PassOutcome::Cancelled;
+    }
+
+    let spawned = app.shell().sidecar("ffmpeg").and_then(|command| command.args(args).spawn());
+    let (mut rx, child) = match spawned {
+        Ok(pair) => pair,
+        Err(e) => return PassOutcome::Failed(format!("could not start ffmpeg ({e})")),
+    };
+    jobs.running.lock().unwrap().insert(job_id, child);
+    // A cancel that landed between the check above and the insert found nothing to kill: handle it now.
+    if jobs.is_cancelled(job_id) {
+        if let Some(child) = jobs.running.lock().unwrap().remove(&job_id) {
+            let _ = child.kill();
+        }
+    }
+
+    let _ = app.emit("job-progress", JobProgress { job_id, percent: 0.0, speed: None, pass });
     let mut percent = 0.0;
     let mut speed = None;
-    let mut last_sent = -1.0;
+    let mut last_sent = 0.0;
     let mut stderr_tail: VecDeque<String> = VecDeque::new();
     let mut exit_code = None;
 
@@ -123,7 +239,7 @@ async fn watch_job(
                 // Only bother the UI when the whole-number percentage changes.
                 Some(ProgressLine::BlockEnd { .. }) if percent.floor() > last_sent => {
                     last_sent = percent.floor();
-                    let _ = app.emit("job-progress", JobProgress { job_id, percent, speed });
+                    let _ = app.emit("job-progress", JobProgress { job_id, percent, speed, pass });
                 }
                 _ => {}
             },
@@ -138,22 +254,13 @@ async fn watch_job(
         }
     }
 
-    // Still in the map → it ended on its own. Gone → `cancel` removed it.
-    let jobs = app.state::<Jobs>();
-    let cancelled = jobs.running.lock().unwrap().remove(&job_id).is_none();
-
-    if exit_code == Some(0) && !cancelled {
-        let size_bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
-        let over_cap = cap.is_some_and(|c| size_bytes > c);
-        let _ = app.emit("job-done", JobDone { job_id, output_path: output, size_bytes, over_cap });
+    jobs.running.lock().unwrap().remove(&job_id);
+    if jobs.is_cancelled(job_id) {
+        PassOutcome::Cancelled
+    } else if exit_code == Some(0) {
+        PassOutcome::Finished
     } else {
-        let _ = std::fs::remove_file(&output); // don't leave half-written files behind
-        let message = if cancelled {
-            "Cancelled".to_string()
-        } else {
-            let detail = stderr_tail.iter().rev().find(|l| !l.is_empty()).cloned().unwrap_or_default();
-            format!("Compression failed: {detail}")
-        };
-        let _ = app.emit("job-error", JobError { job_id, message, cancelled });
+        let detail = stderr_tail.iter().rev().find(|l| !l.is_empty()).cloned();
+        PassOutcome::Failed(detail.unwrap_or_else(|| format!("ffmpeg exited with code {exit_code:?}")))
     }
 }
