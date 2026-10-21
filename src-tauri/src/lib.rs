@@ -1,10 +1,13 @@
+mod clipboard;
 mod encoder;
 mod jobs;
 mod launch;
+mod notify;
 mod planner;
 mod presets;
 mod probe;
 mod queue;
+mod settings;
 mod shell_menu;
 mod tray;
 
@@ -28,6 +31,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_autostart::Builder::new().arg(AUTOSTART_ARG).build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -35,6 +39,7 @@ pub fn run() {
         .manage(queue::Queue::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            app.manage(settings::SettingsState(std::sync::Mutex::new(settings::load(&handle))));
             enable_autostart_on_first_run(&handle); // before the tray, so its tick shows the result
             tray::setup(&handle)?;
             register_shell_menu();
@@ -72,7 +77,8 @@ pub fn run() {
             queue::get_queue,
             queue::cancel_queue_item,
             queue::cancel_queue,
-            queue::clear_queue
+            queue::clear_queue,
+            clipboard::copy_files_to_clipboard
         ])
         .build(context)
         .expect("error while building tauri application");

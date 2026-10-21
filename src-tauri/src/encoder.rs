@@ -85,13 +85,18 @@ pub fn probe_encoder_args(encoder: VideoEncoder) -> Vec<String> {
         .collect()
 }
 
-/// `clip.mov` → `clip_discord.mp4` in the same folder. If that's taken (or would be the input itself),
-/// tries `clip_discord (2).mp4`, `(3)`, ... We never overwrite anything.
+/// `clip.mov` → `clip_discord.mp4`, in `output_dir` if given, else next to the original. If that's taken
+/// (or would be the input itself), tries `clip_discord (2).mp4`, `(3)`, ... We never overwrite anything.
 ///
 /// `exists` is passed in (instead of calling the file system directly) so tests can fake it.
 /// `impl Fn(&Path) -> bool` means "any function/closure taking a path and returning a bool".
-pub fn output_path(input: &Path, suffix: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
-    let dir = input.parent().unwrap_or(Path::new(""));
+pub fn output_path(
+    input: &Path,
+    output_dir: Option<&Path>,
+    suffix: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    let dir = output_dir.unwrap_or_else(|| input.parent().unwrap_or(Path::new("")));
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
 
     let mut candidate = dir.join(format!("{stem}_{suffix}.mp4"));
@@ -197,14 +202,20 @@ mod tests {
 
     #[test]
     fn output_name_gets_suffix_and_mp4_extension() {
-        let out = output_path(Path::new(r"C:\videos\clip.mov"), "discord", |_| false);
+        let out = output_path(Path::new(r"C:\videos\clip.mov"), None, "discord", |_| false);
         assert_eq!(out, PathBuf::from(r"C:\videos\clip_discord.mp4"));
+    }
+
+    #[test]
+    fn output_goes_to_the_chosen_folder() {
+        let out = output_path(Path::new(r"C:\videos\clip.mov"), Some(Path::new(r"D:\out")), "x", |_| false);
+        assert_eq!(out, PathBuf::from(r"D:\out\clip_x.mp4"));
     }
 
     #[test]
     fn output_name_avoids_existing_files() {
         let taken = [PathBuf::from(r"C:\v\clip_discord.mp4"), PathBuf::from(r"C:\v\clip_discord (2).mp4")];
-        let out = output_path(Path::new(r"C:\v\clip.mp4"), "discord", |p| taken.iter().any(|t| t == p));
+        let out = output_path(Path::new(r"C:\v\clip.mp4"), None, "discord", |p| taken.iter().any(|t| t == p));
         assert_eq!(out, PathBuf::from(r"C:\v\clip_discord (3).mp4"));
     }
 
@@ -212,7 +223,7 @@ mod tests {
     fn output_never_overwrites_the_input() {
         let input = Path::new(r"C:\v\clip_discord.mp4");
         // stem is "clip_discord" so the first candidate is clip_discord_discord.mp4: different from input
-        assert_ne!(output_path(input, "discord", |_| false), input);
+        assert_ne!(output_path(input, None, "discord", |_| false), input);
     }
 
     const MF: VideoEncoder = VideoEncoder::MediaFoundation;

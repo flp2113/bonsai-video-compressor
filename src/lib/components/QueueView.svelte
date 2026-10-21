@@ -31,6 +31,24 @@
   });
   const doneCount = $derived(items.filter((i) => i.status.kind === "done").length);
 
+  const doneOutputs = $derived(
+    items.flatMap((i) => (i.status.kind === "done" ? [i.status.outputPath] : [])),
+  );
+
+  /** What the last copy did, shown under the list: "3 videos copied, paste them anywhere". */
+  let copyNote = $state("");
+  async function copy(paths: string[]) {
+    try {
+      await invoke("copy_files_to_clipboard", { paths });
+      copyNote =
+        paths.length === 1
+          ? `${fileName(paths[0])} copied, paste it anywhere`
+          : `${paths.length} videos copied, paste them anywhere`;
+    } catch (e) {
+      copyNote = String(e);
+    }
+  }
+
   function percentOf(item: QueueItem) {
     return item.jobId !== null ? (progress[item.jobId]?.percent ?? 0) : 0;
   }
@@ -70,25 +88,47 @@
 
         {#if status.kind === "waiting" || status.kind === "running"}
           <button
-            class="cancel"
+            class="icon-button"
             aria-label="Cancel {fileName(item.path)}"
             onclick={() => invoke("cancel_queue_item", { id: item.id })}
           >
             <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
           </button>
+        {:else if status.kind === "done"}
+          {@const outputPath = status.outputPath}
+          <button
+            class="icon-button"
+            title="Copy file"
+            aria-label="Copy {fileName(outputPath)}"
+            onclick={() => copy([outputPath])}
+          >
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="4" y="4" width="6.5" height="6.5" rx="1" />
+              <path d="M8 2.5V2a.5.5 0 0 0-.5-.5h-5A.5.5 0 0 0 2 2v5a.5.5 0 0 0 .5.5H3" />
+            </svg>
+          </button>
         {:else}
-          <span class="cancel-space"></span>
+          <span></span>
         {/if}
       </li>
     {/each}
   </ul>
+
+  {#if copyNote}
+    <p class="muted small" aria-live="polite">{copyNote}</p>
+  {/if}
 
   <footer>
     {#if unfinished}
       <button class="secondary wide" onclick={() => invoke("cancel_queue")}>Cancel all</button>
     {:else}
       {#if lastOutput}
-        <button class="primary wide" onclick={() => lastOutput && revealItemInDir(lastOutput)}>Show in folder</button>
+        <div class="pair">
+          <button class="primary" onclick={() => copy(doneOutputs)}>
+            {doneOutputs.length === 1 ? "Copy file" : "Copy all"}
+          </button>
+          <button class="secondary" onclick={() => lastOutput && revealItemInDir(lastOutput)}>Show in folder</button>
+        </div>
       {/if}
       <button class="secondary wide" onclick={() => invoke("clear_queue")}>Done</button>
     {/if}
@@ -184,7 +224,7 @@
     color: var(--danger);
   }
 
-  .cancel {
+  .icon-button {
     display: grid;
     place-items: center;
     width: 24px;
@@ -196,11 +236,11 @@
     color: var(--muted);
     cursor: pointer;
   }
-  .cancel:hover {
+  .icon-button:hover {
     background: color-mix(in srgb, var(--line) 50%, transparent);
     color: var(--text);
   }
-  .cancel svg {
+  .icon-button svg {
     width: 12px;
     height: 12px;
     fill: none;
@@ -212,6 +252,11 @@
   footer {
     display: flex;
     flex-direction: column;
+    gap: 8px;
+  }
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
   }
   .primary,

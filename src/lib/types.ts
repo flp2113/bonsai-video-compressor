@@ -55,6 +55,8 @@ export interface JobDone {
   sizeBytes: number;
   /** e.g. "NVIDIA NVENC", or "Copied" when nothing was re-encoded. */
   encoder: string;
+  /** Whether the file was put on the clipboard (single-file jobs). */
+  copied: boolean;
 }
 
 export interface JobError {

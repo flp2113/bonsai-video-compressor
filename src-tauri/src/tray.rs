@@ -5,10 +5,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewWindowBuilder};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::DialogExt;
+
+use crate::settings;
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -45,34 +48,88 @@ pub fn show_main_window(app: &AppHandle) {
 /// True while `show_main_window` is building the window.
 static OPENING: AtomicBool = AtomicBool::new(false);
 
-pub fn setup(app: &AppHandle) -> tauri::Result<()> {
+const TRAY_ID: &str = "bonsai";
+
+/// Builds the tray menu from the current state (Start with Windows, output folder).
+/// It's rebuilt after every change, so the ticks always show the real state, even if a change failed.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+    let output_dir = settings::current(app).output_dir;
+
+    // "Save to" submenu: next to the original (default), or the chosen folder.
+    let next_to_original = CheckMenuItem::with_id(
+        app,
+        "save-next",
+        "Next to the original",
+        true,
+        output_dir.is_none(),
+        None::<&str>,
+    )?;
+    let choose = MenuItem::with_id(app, "save-choose", "Choose folder…", true, None::<&str>)?;
+    let save_to = Submenu::with_id(app, "save-to", "Save to", true)?;
+    save_to.append(&next_to_original)?;
+    if let Some(dir) = &output_dir {
+        save_to.append(&CheckMenuItem::with_id(app, "save-folder", dir, true, true, None::<&str>)?)?;
+    }
+    save_to.append(&PredefinedMenuItem::separator(app)?)?;
+    save_to.append(&choose)?;
 
     let open = MenuItem::with_id(app, "open", "Open Bonsai", true, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(app, "autostart", "Start with Windows", true, autostart_on, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Bonsai", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &autostart, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    Menu::with_items(app, &[&open, &save_to, &autostart, &separator, &quit])
+}
 
-    let mut tray = TrayIconBuilder::with_id("bonsai")
+fn refresh_menu(app: &AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), build_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+fn toggle_autostart(app: &AppHandle) {
+    let manager = app.autolaunch();
+    let wanted = !manager.is_enabled().unwrap_or(false);
+    let result = if wanted { manager.enable() } else { manager.disable() };
+    if let Err(e) = result {
+        eprintln!("could not change Start with Windows: {e}");
+    }
+}
+
+/// Opens a folder picker; the dialog runs in the background and calls us back with the answer.
+fn choose_output_folder(app: &AppHandle) {
+    let mut dialog = app.dialog().file().set_title("Save compressed videos to");
+    if let Some(dir) = settings::current(app).output_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    // `app.clone()` because the callback runs later, after this function has returned.
+    let app = app.clone();
+    dialog.pick_folder(move |folder| {
+        // `None` = the user closed the picker without choosing: keep the current setting.
+        if let Some(path) = folder.and_then(|f| f.into_path().ok()) {
+            settings::set_output_dir(&app, Some(path.to_string_lossy().into_owned()));
+        }
+        refresh_menu(&app);
+    });
+}
+
+pub fn setup(app: &AppHandle) -> tauri::Result<()> {
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Bonsai")
-        .menu(&menu)
+        .menu(&build_menu(app)?)
         // Left-click opens the window; the menu is on right-click.
         .show_menu_on_left_click(false)
-        // `move` gives the closure its own copy of `autostart`, since it runs later, after `setup` returns.
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => show_main_window(app),
-            "autostart" => {
-                let manager = app.autolaunch();
-                let wanted = !manager.is_enabled().unwrap_or(false);
-                let result = if wanted { manager.enable() } else { manager.disable() };
-                if let Err(e) = result {
-                    eprintln!("could not change Start with Windows: {e}");
-                }
-                // Show the real state, so the tick never lies if the change failed.
-                let _ = autostart.set_checked(manager.is_enabled().unwrap_or(false));
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "open" => show_main_window(app),
+                "autostart" => toggle_autostart(app),
+                "save-next" => settings::set_output_dir(app, None),
+                "save-choose" => return choose_output_folder(app), // refreshes once the picker closes
+                "quit" => return app.exit(0),
+                _ => {}
             }
-            "quit" => app.exit(0),
-            _ => {}
+            // Clicking a check item flips its tick by itself; rebuilding puts back the real state.
+            refresh_menu(app);
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {

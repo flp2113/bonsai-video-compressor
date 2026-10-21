@@ -72,6 +72,8 @@ pub struct JobDone {
     pub size_bytes: u64,
     /// Which encoder produced the file, e.g. "NVIDIA NVENC" (or "Copied" when nothing was re-encoded).
     encoder: &'static str,
+    /// Whether the file was put on the clipboard (single-file jobs from the drop window).
+    copied: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -133,22 +135,27 @@ pub async fn get_encoder(app: AppHandle) -> &'static str {
 #[tauri::command]
 pub async fn compress(app: AppHandle, info: VideoInfo, preset_id: String) -> Result<u32, String> {
     // `_outcome` is dropped: the drop window only needs the events.
-    let (job_id, _outcome) = start_job(&app, info, &preset_id).await?;
+    let (job_id, _outcome) = start_job(&app, info, &preset_id, true).await?;
     Ok(job_id)
 }
 
 /// Plans and starts a job in the background. Besides the usual events, the returned receiver gets the
 /// job's outcome once, so a caller (the right-click queue) can `.await` the job finishing.
 ///
+/// `single`: a one-off job from the drop window. Its result is copied to the clipboard and gets its own
+/// notification. Queue jobs (`false`) leave the clipboard alone and are summarised by the queue instead.
+///
 /// `oneshot` is a channel that carries exactly one message: the sender lives in the job, the receiver here.
 pub async fn start_job(
     app: &AppHandle,
     info: VideoInfo,
     preset_id: &str,
+    single: bool,
 ) -> Result<(u32, oneshot::Receiver<JobOutcome>), String> {
     let preset = presets::find(preset_id).ok_or_else(|| format!("Unknown preset '{preset_id}'"))?;
     let plan = planner::plan(&info, preset)?;
-    let output = encoder::output_path(Path::new(&info.path), preset.suffix, |p| p.exists());
+    let output_dir = chosen_output_dir(app);
+    let output = encoder::output_path(Path::new(&info.path), output_dir.as_deref(), preset.suffix, |p| p.exists());
     let cap = match preset.budget {
         Budget::MaxBytes(bytes) => Some(bytes),
         Budget::Quality { .. } => None,
@@ -157,13 +164,20 @@ pub async fn start_job(
 
     let jobs = app.state::<Jobs>();
     let job_id = jobs.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-    let job = Job { job_id, info, plan, output: output.to_string_lossy().into_owned(), cap, encoder };
+    let job = Job { job_id, info, plan, output: output.to_string_lossy().into_owned(), cap, encoder, single };
 
     // Hand the work to a background task so this returns immediately.
     let (sender, receiver) = oneshot::channel();
     jobs.active.fetch_add(1, Ordering::Relaxed);
     tauri::async_runtime::spawn(run_job(app.clone(), job, sender));
     Ok((job_id, receiver))
+}
+
+/// The output folder from the tray's "Save to" menu, if one is set and usable. If it was deleted or can't be
+/// created (e.g. an unplugged drive), files go next to the original instead of failing.
+fn chosen_output_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(crate::settings::current(app).output_dir?);
+    std::fs::create_dir_all(&dir).ok().map(|_| dir)
 }
 
 /// Stops a job, whether ffmpeg is mid-pass or the job is between passes.
@@ -185,6 +199,8 @@ struct Job {
     output: String,
     cap: Option<u64>,
     encoder: VideoEncoder,
+    /// A one-off job from the drop window (see `start_job`).
+    single: bool,
 }
 
 enum PassOutcome {
@@ -233,12 +249,23 @@ async fn run_job(app: AppHandle, mut job: Job, outcome_sender: oneshot::Sender<J
     let outcome = match result {
         Ok(size_bytes) => {
             let encoder = if job.plan.mode == Mode::Copy { "Copied" } else { job.encoder.label() };
-            let done = JobDone { job_id: job.job_id, output_path: job.output, size_bytes, encoder };
+            let copied = job.single && crate::clipboard::copy_files(&[job.output.clone()]).is_ok();
+            if job.single {
+                let name = Path::new(&job.output).file_name().map(|n| n.to_string_lossy().into_owned());
+                let size = crate::notify::format_size(size_bytes);
+                let body = if copied { format!("{size}. Copied, paste it anywhere.") } else { size };
+                crate::notify::show(&app, &format!("{} is ready", name.unwrap_or_default()), &body);
+            }
+            let done = JobDone { job_id: job.job_id, output_path: job.output, size_bytes, encoder, copied };
             let _ = app.emit("job-done", done.clone());
             Ok(done)
         }
         Err((message, cancelled)) => {
             let _ = std::fs::remove_file(&job.output); // never leave a broken or oversized file behind
+            if job.single && !cancelled {
+                let name = Path::new(&job.info.path).file_name().map(|n| n.to_string_lossy().into_owned());
+                crate::notify::show(&app, &format!("Couldn't compress {}", name.unwrap_or_default()), &message);
+            }
             let error = JobError { job_id: job.job_id, message, cancelled };
             let _ = app.emit("job-error", error.clone());
             Err(error)

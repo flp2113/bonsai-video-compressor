@@ -131,6 +131,21 @@
     }
   }
 
+  let recopied = $state(false);
+  let copyError = $state("");
+
+  /** Puts the finished file on the clipboard again (e.g. after copying something else meanwhile). */
+  async function copyDone() {
+    if (!done) return;
+    try {
+      await invoke("copy_files_to_clipboard", { paths: [done.outputPath] });
+      recopied = true;
+      copyError = "";
+    } catch (e) {
+      copyError = String(e);
+    }
+  }
+
   function cancel() {
     if (job) invoke("cancel", { jobId: job.jobId });
   }
@@ -158,7 +173,13 @@
       listen<JobProgress>("job-progress", ({ payload }) => {
         if (job?.jobId === payload.jobId) job = payload;
       }),
-      listen<JobDone>("job-done", ({ payload }) => onFinish(payload.jobId, () => (done = payload))),
+      listen<JobDone>("job-done", ({ payload }) =>
+        onFinish(payload.jobId, () => {
+          done = payload;
+          recopied = false;
+          copyError = "";
+        }),
+      ),
       listen<JobError>("job-error", ({ payload }) => onFinish(payload.jobId, () => onJobError(payload))),
     ];
     return () => unlisteners.forEach((u) => u.then((fn) => fn()));
@@ -259,7 +280,7 @@
           <p class="status">
             Saved as <strong>{fileName(done.outputPath)}</strong>
             <span class="muted">
-              {done.encoder === "Copied" ? "Copied without re-encoding" : `Encoded with ${done.encoder}`}
+              {done.copied || recopied ? "On the clipboard, paste it anywhere" : copyError || "Ready to share"}
             </span>
           </p>
         {:else}
@@ -280,7 +301,11 @@
       {#if job}
         <button class="secondary wide" onclick={cancel}>Cancel</button>
       {:else if done}
-        <button class="primary wide" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
+        <div class="pair">
+          <!-- Already copied automatically, so copying again is the secondary action. -->
+          <button class="primary" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
+          <button class="secondary" onclick={copyDone}>Copy file</button>
+        </div>
       {:else}
         <button class="primary wide" onclick={compress} disabled={!plan}>Compress</button>
       {/if}
@@ -404,6 +429,14 @@
 
   footer {
     margin-top: auto;
+  }
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .pair button {
+    padding-block: 11px;
   }
 
   .primary,
