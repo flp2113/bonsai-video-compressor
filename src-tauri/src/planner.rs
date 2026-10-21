@@ -41,6 +41,7 @@ pub struct EncodePlan {
     pub video_kbps: u32,
     pub audio_kbps: u32,
     pub estimated_bytes: u64,
+    /// Things the user should know before sending the file (e.g. X's 2:20 limit for free accounts).
     pub warnings: Vec<String>,
 }
 
@@ -125,7 +126,7 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
 
             // Too few bits for this many pixels? Halve the frame rate first (motion stays smooth enough
             // at 30 fps), then step the resolution down the ladder.
-            let start_short = width.min(height);
+            // (The UI explains any lowered resolution/fps itself by comparing the plan with the source.)
             while bits_per_pixel(video, width, height, fps) < MIN_BITS_PER_PIXEL {
                 if fps > 31.0 {
                     fps = if fps >= 48.0 { fps / 2.0 } else { 30.0 };
@@ -134,13 +135,6 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
                 } else {
                     break; // already at the smallest size; accept a softer picture
                 }
-            }
-            if width.min(height) < start_short {
-                warnings.push(format!(
-                    "Reduced to {}p to fit {}",
-                    width.min(height),
-                    presets::format_mb(cap)
-                ));
             }
             (video, audio)
         }
@@ -160,9 +154,6 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
     };
 
     let fps_lowered = fps < source_fps - 0.5;
-    if fps_lowered {
-        warnings.push(format!("Frame rate lowered to {} fps", fps.round()));
-    }
 
     Ok(EncodePlan {
         mode: Mode::Encode,
@@ -231,7 +222,7 @@ mod tests {
         assert_eq!((p.width, p.height), (1280, 720));
         assert_eq!(p.fps, 30.0);
         assert!(p.estimated_bytes <= DISCORD_CAP, "estimated {} bytes", p.estimated_bytes);
-        assert!(p.warnings.iter().any(|w| w.contains("720p")));
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
     }
 
     #[test]

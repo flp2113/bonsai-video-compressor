@@ -16,6 +16,13 @@ export interface VideoInfo {
 export interface PresetSummary {
   id: string;
   label: string;
+  /** Destination row in the list, e.g. "Discord". */
+  group: string;
+  /** Option within a group, e.g. "Nitro"; null when the group has a single preset. */
+  tier: string | null;
+  /** Size limit in bytes; null for quality-based presets (Instagram, YouTube). */
+  capBytes: number | null;
+  /** "20 MB" or "Best quality". */
   hint: string;
 }
 
@@ -29,6 +36,7 @@ export interface EncodePlan {
   videoKbps: number;
   audioKbps: number;
   estimatedBytes: number;
+  /** Things to know before sending, e.g. X's 2:20 limit for free accounts. */
   warnings: string[];
 }
 

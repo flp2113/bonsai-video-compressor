@@ -4,6 +4,11 @@
   import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import DestinationPicker from "$lib/components/DestinationPicker.svelte";
+  import DetailsPanel from "$lib/components/DetailsPanel.svelte";
+  import DropOverlay from "$lib/components/DropOverlay.svelte";
+  import SizeMeter from "$lib/components/SizeMeter.svelte";
+  import { fileName, formatDuration, formatFps, planSentence } from "$lib/format";
   import {
     VIDEO_EXTENSIONS,
     type EncodePlan,
@@ -14,30 +19,62 @@
     type VideoInfo,
   } from "$lib/types";
 
+  const PRESET_KEY = "bonsai.presetId";
+
   let info = $state<VideoInfo | null>(null);
   let error = $state("");
   let loading = $state(false);
   let dragging = $state(false);
+  let detailsOpen = $state(false);
 
   let presets = $state<PresetSummary[]>([]);
-  let presetId = $state("discord-free");
+  let presetId = $state(readSavedPreset() ?? "discord-free");
   let plan = $state<EncodePlan | null>(null);
   let planError = $state("");
 
   let job = $state<JobProgress | null>(null);
   let done = $state<JobDone | null>(null);
   let jobError = $state("");
+  let jobCancelled = $state(false);
 
   let encoderLabel = $state("");
 
-  invoke<PresetSummary[]>("list_presets").then((list) => (presets = list));
+  const preset = $derived(presets.find((p) => p.id === presetId));
+
+  invoke<PresetSummary[]>("list_presets").then((list) => {
+    presets = list;
+    if (!list.some((p) => p.id === presetId)) presetId = list[0]?.id ?? presetId;
+  });
   invoke<string>("get_encoder").then((label) => (encoderLabel = label));
+
+  // localStorage can be unavailable or throw (e.g. blocked storage); the app works fine without it.
+  function readSavedPreset() {
+    try {
+      return localStorage.getItem(PRESET_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  function selectPreset(id: string) {
+    presetId = id;
+    done = null;
+    clearJobMessages();
+    try {
+      localStorage.setItem(PRESET_KEY, id);
+    } catch {}
+  }
+
+  function clearJobMessages() {
+    jobError = "";
+    jobCancelled = false;
+  }
 
   async function load(path: string) {
     if (job) return; // don't swap the video out from under a running job
     loading = true;
     done = null;
-    jobError = "";
+    clearJobMessages();
     error = "";
     info = null;
     try {
@@ -66,7 +103,7 @@
   async function compress() {
     if (!info) return;
     done = null;
-    jobError = "";
+    clearJobMessages();
     try {
       const jobId = await invoke<number>("compress", { info, presetId });
       job = { jobId, percent: 0, speed: null, pass: 1 };
@@ -94,6 +131,11 @@
     else earlyFinish.set(jobId, run);
   }
 
+  function onJobError(payload: JobError) {
+    if (payload.cancelled) jobCancelled = true;
+    else jobError = payload.message;
+  }
+
   // Job events come from Rust (src-tauri/src/jobs.rs).
   $effect(() => {
     const unlisteners = [
@@ -101,7 +143,7 @@
         if (job?.jobId === payload.jobId) job = payload;
       }),
       listen<JobDone>("job-done", ({ payload }) => onFinish(payload.jobId, () => (done = payload))),
-      listen<JobError>("job-error", ({ payload }) => onFinish(payload.jobId, () => (jobError = payload.message))),
+      listen<JobError>("job-error", ({ payload }) => onFinish(payload.jobId, () => onJobError(payload))),
     ];
     return () => unlisteners.forEach((u) => u.then((fn) => fn()));
   });
@@ -130,302 +172,250 @@
     };
   });
 
-  const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-  // Decimal MB (1,000,000 bytes) to match how the presets define their limits.
-  const megabytes = (bytes: number) => (bytes / 1_000_000).toFixed(1) + " MB";
-  function duration(s: number) {
-    const m = Math.floor(s / 60);
-    const sec = (s % 60).toFixed(1).padStart(4, "0");
-    return `${m}:${sec}`;
+  function progressText(p: JobProgress) {
+    const what = p.pass > 1 ? `Slightly over the limit, compressing again (try ${p.pass})` : "Compressing";
+    const speed = p.speed ? `, ${p.speed.toFixed(1)}× real time` : "";
+    return `${what}… ${Math.floor(p.percent)}%${speed}`;
   }
 </script>
 
+{#if dragging && !job}
+  <DropOverlay />
+{/if}
+
 <main>
-  <button class="drop" class:dragging onclick={chooseFile} disabled={loading || job !== null}>
-    {#if loading}
-      Reading video…
-    {:else}
-      <strong>Drop a video here</strong>
-      <span>or click to choose a file</span>
-    {/if}
-  </button>
-
-  {#if error}
-    <p class="error">{error}</p>
-  {/if}
-
-  {#if info}
-    <section class="card">
-      <h2 title={info.path}>{fileName(info.path)}</h2>
-      <dl>
-        <dt>Size</dt><dd>{megabytes(info.sizeBytes)}</dd>
-        <dt>Duration</dt><dd>{duration(info.durationS)}</dd>
-        <dt>Resolution</dt><dd>{info.width}×{info.height}</dd>
-        <dt>Frame rate</dt><dd>{info.fps.toFixed(2)} fps</dd>
-        <dt>Video</dt><dd>{info.videoCodec} · {info.bitrateKbps} kbps total</dd>
-        <dt>Audio</dt>
-        <dd>
-          {#if info.audioCodec}
-            {info.audioCodec}{info.audioBitrateKbps ? ` · ${info.audioBitrateKbps} kbps` : ""}
-          {:else}
-            none
-          {/if}
-        </dd>
-      </dl>
+  {#if !info}
+    <section class="empty">
+      {#if loading}
+        <h1>Reading video…</h1>
+      {:else}
+        <h1>Drop a video</h1>
+        <p class="muted">Bonsai shrinks it to fit Discord, X, Instagram or YouTube.</p>
+        <button class="secondary" onclick={chooseFile}>Choose a file</button>
+        {#if error}
+          <p class="error">{error}</p>
+        {/if}
+      {/if}
     </section>
-
-    <section class="presets" aria-label="Presets">
-      {#each presets as preset (preset.id)}
+  {:else}
+    <header>
+      <div class="name-row">
+        <h1 title={info.path}>{fileName(info.path)}</h1>
+        <button class="link" onclick={chooseFile} disabled={job !== null}>Change</button>
+      </div>
+      <div class="meta-row">
+        <span class="muted">
+          {formatDuration(info.durationS)} · {info.width}×{info.height} · {formatFps(info.fps)}
+        </span>
         <button
-          class:selected={preset.id === presetId}
-          disabled={job !== null}
-          onclick={() => (presetId = preset.id)}
+          class="link"
+          aria-expanded={detailsOpen}
+          aria-controls="details"
+          onclick={() => (detailsOpen = !detailsOpen)}
         >
-          <strong>{preset.label}</strong>
-          <span>{preset.hint}</span>
+          Details
+          <svg class="chevron" class:open={detailsOpen} viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 4.5 6 7.5 9 4.5" />
+          </svg>
         </button>
-      {/each}
-    </section>
-    {#if encoderLabel}
-      <p class="encoder">Encoder: {encoderLabel}</p>
-    {/if}
+      </div>
+      <DetailsPanel id="details" open={detailsOpen} {info} {plan} {encoderLabel} />
+    </header>
 
-    {#if planError}
-      <p class="error">{planError}</p>
-    {:else if plan}
-      <section class="card plan">
-        {#if plan.mode === "copy"}
-          <p>Already fits: will be copied without re-encoding ({megabytes(plan.estimatedBytes)}).</p>
-        {:else}
-          <p>
-            {plan.width}×{plan.height} · {Math.round(plan.fps)} fps ·
-            {(plan.videoKbps / 1000).toFixed(2)} Mbps · ≈{megabytes(plan.estimatedBytes)}
+    <DestinationPicker {presets} {presetId} disabled={job !== null} onselect={selectPreset} />
+
+    <section class="outcome" aria-live="polite">
+      {#if planError}
+        <p class="error">{planError}</p>
+      {:else if plan}
+        <SizeMeter
+          originalBytes={info.sizeBytes}
+          capBytes={preset?.capBytes ?? null}
+          estimateBytes={plan.estimatedBytes}
+          progress={job?.percent ?? null}
+          actualBytes={done?.sizeBytes ?? null}
+        />
+        {#if job}
+          <p class="status">{progressText(job)}</p>
+        {:else if done}
+          <p class="status">
+            Saved as <strong>{fileName(done.outputPath)}</strong>
+            <span class="muted">
+              {done.encoder === "Copied" ? "Copied without re-encoding" : `Encoded with ${done.encoder}`}
+            </span>
           </p>
+        {:else}
+          <p class="status muted">{planSentence(plan, info, preset)}</p>
         {/if}
         {#each plan.warnings as warning}
           <p class="warning">{warning}</p>
         {/each}
-      </section>
-
-      {#if job}
-        <section class="job">
-          <div class="bar"><div style:width="{job.percent}%"></div></div>
-          <span>{Math.floor(job.percent)}%{job.speed ? ` · ${job.speed.toFixed(1)}×` : ""}</span>
-          <button class="secondary" onclick={cancel}>Cancel</button>
-        </section>
-        {#if job.pass > 1}
-          <p class="encoder">Slightly over the limit, re-encoding to fit (pass {job.pass})…</p>
-        {/if}
-      {:else}
-        <button class="primary" onclick={compress}>Compress</button>
       {/if}
-    {/if}
+      {#if jobError}
+        <p class="error">{jobError}</p>
+      {:else if jobCancelled}
+        <p class="muted">Cancelled. Nothing was saved.</p>
+      {/if}
+    </section>
 
-    {#if jobError}
-      <p class="error">{jobError}</p>
-    {/if}
-
-    {#if done}
-      <section class="card done">
-        <p>
-          Saved <strong>{fileName(done.outputPath)}</strong> · {megabytes(done.sizeBytes)}
-        </p>
-        <p class="encoder">{done.encoder === "Copied" ? "Copied without re-encoding" : `Encoded with ${done.encoder}`}</p>
-        <button class="secondary" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
-      </section>
-    {/if}
+    <footer>
+      {#if job}
+        <button class="secondary wide" onclick={cancel}>Cancel</button>
+      {:else if done}
+        <button class="primary wide" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
+      {:else}
+        <button class="primary wide" onclick={compress} disabled={!plan}>Compress</button>
+      {/if}
+    </footer>
   {/if}
 </main>
 
 <style>
-  :global(:root) {
-    --bg: #f6f6f4;
-    --surface: #ffffff;
-    --text: #1b1b1a;
-    --muted: #6b6b66;
-    --border: #d9d9d4;
-    --accent: #3f7d4e;
-    --accent-soft: #e3efe5;
-    --danger: #b3261e;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    font-size: 14px;
-    color: var(--text);
-    background: var(--bg);
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(:root) {
-      --bg: #1c1c1b;
-      --surface: #262625;
-      --text: #ececea;
-      --muted: #9a9a94;
-      --border: #3a3a38;
-      --accent: #7cc28c;
-      --accent-soft: #2a3a2d;
-      --danger: #f2b8b5;
-    }
-  }
-  :global(body) {
-    margin: 0;
-    background: var(--bg);
-  }
-
   main {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 16px;
+    gap: 20px;
+    height: 100vh;
+    padding: var(--gutter);
+    overflow-y: auto;
   }
 
-  .drop {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    height: 160px;
-    border: 2px dashed var(--border);
-    border-radius: 12px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
+  h1 {
+    margin: 0;
+    font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    font-size: var(--text-xl);
+    font-weight: 600;
+    line-height: 1.2;
   }
-  .drop span {
+  p {
+    margin: 0;
+  }
+  .muted {
     color: var(--muted);
   }
-  .drop:hover,
-  .drop.dragging {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-  .drop:disabled {
-    cursor: progress;
-  }
-
   .error {
-    margin: 0;
     color: var(--danger);
   }
-
-  .card {
-    padding: 12px 16px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
-  }
-  .card h2 {
-    margin: 0 0 8px;
-    font-size: 15px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  dl {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 16px;
-    margin: 0;
-  }
-  dt {
-    color: var(--muted);
-  }
-  dd {
-    margin: 0;
+  .warning {
+    font-size: var(--text-sm);
+    color: var(--warn);
   }
 
-  .presets {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-  }
-  .presets button {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    padding: 8px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 12px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .presets button span {
-    color: var(--muted);
-  }
-  .presets button.selected {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .presets button:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .plan p,
-  .done p {
-    margin: 0;
-  }
-  .done {
+  .empty {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+    margin: auto 0;
+    padding-bottom: 40px;
+  }
+  .empty .secondary {
+    margin-top: 12px;
+  }
+
+  header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .name-row,
+  .meta-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .name-row h1 {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    padding: 2px 4px;
+    margin-right: -4px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .link:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+  .link:disabled {
+    color: var(--muted);
+    cursor: default;
+  }
+  .chevron {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.2s;
+  }
+  .chevron.open {
+    transform: rotate(180deg);
+  }
+
+  .outcome {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .status strong {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .status .muted {
+    font-size: var(--text-sm);
+  }
+
+  footer {
+    margin-top: auto;
   }
 
   .primary,
   .secondary {
-    padding: 8px 16px;
-    border-radius: 8px;
-    font: inherit;
+    padding: 8px 20px;
+    border-radius: var(--radius);
     cursor: pointer;
+  }
+  .wide {
+    width: 100%;
+    padding-block: 11px;
   }
   .primary {
     border: none;
     background: var(--accent);
-    color: var(--bg);
+    color: var(--accent-ink);
     font-weight: 600;
   }
+  .primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 88%, var(--text));
+  }
+  .primary:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
   .secondary {
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     background: var(--surface);
-    color: var(--text);
   }
-
-  .job {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .job span {
-    min-width: 72px;
-    font-variant-numeric: tabular-nums;
-  }
-  .bar {
-    flex: 1;
-    height: 8px;
-    border-radius: 4px;
-    background: var(--border);
-    overflow: hidden;
-  }
-  .bar div {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s;
-  }
-  .encoder {
-    margin: 0;
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .plan .warning {
-    margin-top: 6px;
-    color: var(--muted);
-    font-size: 12px;
+  .secondary:hover {
+    border-color: var(--muted);
   }
 </style>
