@@ -39,9 +39,16 @@ pub struct Jobs {
     /// between two passes, when no ffmpeg is running.
     cancelled: Mutex<HashSet<u32>>,
     encoder: OnceCell<VideoEncoder>,
+    /// Jobs started and not yet finished (including between passes, when no ffmpeg is running).
+    active: AtomicU32,
 }
 
 impl Jobs {
+    /// True while any compression is in progress; closing the window then hides it instead of destroying it.
+    pub fn has_active_jobs(&self) -> bool {
+        self.active.load(Ordering::Relaxed) > 0
+    }
+
     fn is_cancelled(&self, job_id: u32) -> bool {
         self.cancelled.lock().unwrap().contains(&job_id)
     }
@@ -123,6 +130,7 @@ pub async fn compress(
     let job = Job { job_id, info, plan, output: output.to_string_lossy().into_owned(), cap, encoder };
 
     // Hand the work to a background task so this command returns immediately.
+    jobs.active.fetch_add(1, Ordering::Relaxed);
     tauri::async_runtime::spawn(run_job(app, job));
     Ok(job_id)
 }
@@ -189,6 +197,7 @@ async fn run_job(app: AppHandle, mut job: Job) {
 
     let jobs = app.state::<Jobs>();
     jobs.cancelled.lock().unwrap().remove(&job.job_id);
+    jobs.active.fetch_sub(1, Ordering::Relaxed);
 
     match result {
         Ok(size_bytes) => {
@@ -199,6 +208,15 @@ async fn run_job(app: AppHandle, mut job: Job) {
         Err((message, cancelled)) => {
             let _ = std::fs::remove_file(&job.output); // never leave a broken or oversized file behind
             let _ = app.emit("job-error", JobError { job_id: job.job_id, message, cancelled });
+        }
+    }
+
+    // The window was closed during this job and only hidden to keep its progress: free it now.
+    if !jobs.has_active_jobs() {
+        if let Some(window) = app.get_webview_window(crate::tray::MAIN_WINDOW) {
+            if !window.is_visible().unwrap_or(true) {
+                let _ = window.destroy();
+            }
         }
     }
 }
