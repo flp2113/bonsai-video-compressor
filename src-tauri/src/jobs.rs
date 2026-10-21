@@ -14,7 +14,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::OnceCell;
+use tokio::sync::{oneshot, OnceCell};
 
 use crate::encoder::{self, ProgressLine, VideoEncoder};
 use crate::planner::{self, EncodePlan, Mode};
@@ -66,20 +66,40 @@ struct JobProgress {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct JobDone {
+pub struct JobDone {
     job_id: u32,
-    output_path: String,
-    size_bytes: u64,
+    pub output_path: String,
+    pub size_bytes: u64,
     /// Which encoder produced the file, e.g. "NVIDIA NVENC" (or "Copied" when nothing was re-encoded).
     encoder: &'static str,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct JobError {
+pub struct JobError {
     job_id: u32,
-    message: String,
-    cancelled: bool,
+    pub message: String,
+    pub cancelled: bool,
+}
+
+/// How a job ended. `Result` is Rust's built-in "success or failure" enum: `Ok(JobDone)` or `Err(JobError)`.
+pub type JobOutcome = Result<JobDone, JobError>;
+
+/// True while anything is compressing or queued: closing the window then hides it instead of destroying it.
+pub fn is_busy(app: &AppHandle) -> bool {
+    app.state::<Jobs>().has_active_jobs() || app.state::<crate::queue::Queue>().has_unfinished()
+}
+
+/// If the window was only hidden to keep a job's progress, destroy it once there's nothing left to show.
+pub fn free_window_if_idle(app: &AppHandle) {
+    if is_busy(app) {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(crate::tray::MAIN_WINDOW) {
+        if !window.is_visible().unwrap_or(true) {
+            let _ = window.destroy();
+        }
+    }
 }
 
 /// Picks the best encoder by trying a 1-frame encode with each hardware encoder in turn.
@@ -111,28 +131,39 @@ pub async fn get_encoder(app: AppHandle) -> &'static str {
 
 /// Starts compressing and returns the job id right away; results arrive as events.
 #[tauri::command]
-pub async fn compress(
-    app: AppHandle,
-    jobs: State<'_, Jobs>,
+pub async fn compress(app: AppHandle, info: VideoInfo, preset_id: String) -> Result<u32, String> {
+    // `_outcome` is dropped: the drop window only needs the events.
+    let (job_id, _outcome) = start_job(&app, info, &preset_id).await?;
+    Ok(job_id)
+}
+
+/// Plans and starts a job in the background. Besides the usual events, the returned receiver gets the
+/// job's outcome once, so a caller (the right-click queue) can `.await` the job finishing.
+///
+/// `oneshot` is a channel that carries exactly one message: the sender lives in the job, the receiver here.
+pub async fn start_job(
+    app: &AppHandle,
     info: VideoInfo,
-    preset_id: String,
-) -> Result<u32, String> {
-    let preset = presets::find(&preset_id).ok_or_else(|| format!("Unknown preset '{preset_id}'"))?;
+    preset_id: &str,
+) -> Result<(u32, oneshot::Receiver<JobOutcome>), String> {
+    let preset = presets::find(preset_id).ok_or_else(|| format!("Unknown preset '{preset_id}'"))?;
     let plan = planner::plan(&info, preset)?;
     let output = encoder::output_path(Path::new(&info.path), preset.suffix, |p| p.exists());
     let cap = match preset.budget {
         Budget::MaxBytes(bytes) => Some(bytes),
         Budget::Quality { .. } => None,
     };
-    let encoder = best_encoder(&app).await;
+    let encoder = best_encoder(app).await;
 
+    let jobs = app.state::<Jobs>();
     let job_id = jobs.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let job = Job { job_id, info, plan, output: output.to_string_lossy().into_owned(), cap, encoder };
 
-    // Hand the work to a background task so this command returns immediately.
+    // Hand the work to a background task so this returns immediately.
+    let (sender, receiver) = oneshot::channel();
     jobs.active.fetch_add(1, Ordering::Relaxed);
-    tauri::async_runtime::spawn(run_job(app, job));
-    Ok(job_id)
+    tauri::async_runtime::spawn(run_job(app.clone(), job, sender));
+    Ok((job_id, receiver))
 }
 
 /// Stops a job, whether ffmpeg is mid-pass or the job is between passes.
@@ -164,7 +195,7 @@ enum PassOutcome {
 
 /// Runs passes until the output is good, the job fails, or it's cancelled.
 /// `mut job` = this function owns the job and may change it (e.g. lower the bitrate between passes).
-async fn run_job(app: AppHandle, mut job: Job) {
+async fn run_job(app: AppHandle, mut job: Job, outcome_sender: oneshot::Sender<JobOutcome>) {
     let mut pass = 1;
     let result: Result<u64, (String, bool)> = loop {
         let args = encoder::build_args(&job.info.path, &job.output, &job.plan, job.encoder);
@@ -199,26 +230,25 @@ async fn run_job(app: AppHandle, mut job: Job) {
     jobs.cancelled.lock().unwrap().remove(&job.job_id);
     jobs.active.fetch_sub(1, Ordering::Relaxed);
 
-    match result {
+    let outcome = match result {
         Ok(size_bytes) => {
             let encoder = if job.plan.mode == Mode::Copy { "Copied" } else { job.encoder.label() };
             let done = JobDone { job_id: job.job_id, output_path: job.output, size_bytes, encoder };
-            let _ = app.emit("job-done", done);
+            let _ = app.emit("job-done", done.clone());
+            Ok(done)
         }
         Err((message, cancelled)) => {
             let _ = std::fs::remove_file(&job.output); // never leave a broken or oversized file behind
-            let _ = app.emit("job-error", JobError { job_id: job.job_id, message, cancelled });
+            let error = JobError { job_id: job.job_id, message, cancelled };
+            let _ = app.emit("job-error", error.clone());
+            Err(error)
         }
-    }
+    };
+    // Fails only if nobody is waiting for it (the drop window), which is fine.
+    let _ = outcome_sender.send(outcome);
 
     // The window was closed during this job and only hidden to keep its progress: free it now.
-    if !jobs.has_active_jobs() {
-        if let Some(window) = app.get_webview_window(crate::tray::MAIN_WINDOW) {
-            if !window.is_visible().unwrap_or(true) {
-                let _ = window.destroy();
-            }
-        }
-    }
+    free_window_if_idle(&app);
 }
 
 /// One ffmpeg run, streaming progress events until it exits.

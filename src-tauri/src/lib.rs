@@ -1,8 +1,11 @@
 mod encoder;
 mod jobs;
+mod launch;
 mod planner;
 mod presets;
 mod probe;
+mod queue;
+mod shell_menu;
 mod tray;
 
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -12,21 +15,34 @@ const AUTOSTART_ARG: &str = "--autostart";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    launch::wait_for_running_copy(&context.config().identifier);
+
     let app = tauri::Builder::default()
-        // Must be the first plugin: a second launch just shows the window of the copy already running.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main_window(app)))
+        // Must be the first plugin. A second launch doesn't start another copy: its arguments arrive here, in
+        // the copy already running. That's how each file of a right-click on several files reaches the queue.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            match shell_menu::parse_launch_args(&args) {
+                Some((preset, paths)) => queue::enqueue(app, &preset, paths),
+                None => tray::show_main_window(app),
+            }
+        }))
         .plugin(tauri_plugin_autostart::Builder::new().arg(AUTOSTART_ARG).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .manage(jobs::Jobs::default())
+        .manage(queue::Queue::default())
         .setup(|app| {
             let handle = app.handle().clone();
             enable_autostart_on_first_run(&handle); // before the tray, so its tick shows the result
             tray::setup(&handle)?;
+            register_shell_menu();
 
-            let started_at_sign_in = std::env::args().any(|arg| arg == AUTOSTART_ARG);
-            if !started_at_sign_in {
+            let args: Vec<String> = std::env::args().collect();
+            if let Some((preset, paths)) = shell_menu::parse_launch_args(&args) {
+                queue::enqueue(&handle, &preset, paths); // started from a right-click
+            } else if !args.iter().any(|arg| arg == AUTOSTART_ARG) {
                 tray::show_main_window(&handle);
             }
 
@@ -40,7 +56,7 @@ pub fn run() {
             // Closing the window normally destroys it (freeing the webview's memory) while the app stays in
             // the tray. During a compression we only hide it, so its progress is still there when reopened.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.state::<jobs::Jobs>().has_active_jobs() {
+                if jobs::is_busy(window.app_handle()) {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -52,9 +68,13 @@ pub fn run() {
             planner::plan_compression,
             jobs::compress,
             jobs::cancel,
-            jobs::get_encoder
+            jobs::get_encoder,
+            queue::get_queue,
+            queue::cancel_queue_item,
+            queue::cancel_queue,
+            queue::clear_queue
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_app, event| {
@@ -64,6 +84,17 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+/// Adds "Compress with Bonsai" to Explorer's right-click menu, pointing at this exe.
+/// Done on every start (dev builds too), so the menu always points at the copy that ran last.
+fn register_shell_menu() {
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe() {
+        if let Err(e) = shell_menu::register(&exe.to_string_lossy()) {
+            eprintln!("could not add the right-click menu: {e}");
+        }
+    }
 }
 
 /// Turns "Start with Windows" on the very first time Bonsai runs; after that the user's choice in the tray

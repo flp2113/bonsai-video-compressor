@@ -7,6 +7,7 @@
   import DestinationPicker from "$lib/components/DestinationPicker.svelte";
   import DetailsPanel from "$lib/components/DetailsPanel.svelte";
   import DropOverlay from "$lib/components/DropOverlay.svelte";
+  import QueueView from "$lib/components/QueueView.svelte";
   import SizeMeter from "$lib/components/SizeMeter.svelte";
   import { fileName, formatDuration, formatFps, planSentence } from "$lib/format";
   import {
@@ -16,6 +17,7 @@
     type JobError,
     type JobProgress,
     type PresetSummary,
+    type QueueItem,
     type VideoInfo,
   } from "$lib/types";
 
@@ -39,6 +41,10 @@
 
   let encoderLabel = $state("");
 
+  /** Files sent from Explorer's right-click menu (src-tauri/src/queue.rs). While non-empty, the queue is shown. */
+  let queue = $state<QueueItem[]>([]);
+  const queueBusy = $derived(queue.some((i) => i.status.kind === "waiting" || i.status.kind === "running"));
+
   const preset = $derived(presets.find((p) => p.id === presetId));
 
   invoke<PresetSummary[]>("list_presets").then((list) => {
@@ -46,6 +52,16 @@
     if (!list.some((p) => p.id === presetId)) presetId = list[0]?.id ?? presetId;
   });
   invoke<string>("get_encoder").then((label) => (encoderLabel = label));
+
+  // The window may be created after files were queued: start listening first, then fetch the current list,
+  // so nothing added in between is missed.
+  $effect(() => {
+    const unlisten = listen<QueueItem[]>("queue-changed", ({ payload }) => (queue = payload));
+    unlisten.then(() => invoke<QueueItem[]>("get_queue")).then((items) => (queue = items));
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  });
 
   // localStorage can be unavailable or throw (e.g. blocked storage); the app works fine without it.
   function readSavedPreset() {
@@ -71,7 +87,7 @@
   }
 
   async function load(path: string) {
-    if (job) return; // don't swap the video out from under a running job
+    if (job || queueBusy) return; // don't swap the video out from under a running job
     loading = true;
     done = null;
     clearJobMessages();
@@ -179,12 +195,14 @@
   }
 </script>
 
-{#if dragging && !job}
+{#if dragging && !job && !queueBusy}
   <DropOverlay />
 {/if}
 
 <main>
-  {#if !info}
+  {#if queue.length > 0}
+    <QueueView items={queue} />
+  {:else if !info}
     <section class="empty">
       {#if loading}
         <h1>Reading video…</h1>

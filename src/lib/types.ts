@@ -63,4 +63,24 @@ export interface JobError {
   cancelled: boolean;
 }
 
+/** Mirrors `QueueStatus` in src-tauri/src/queue.rs (serde `tag = "kind"`). */
+export type QueueStatus =
+  | { kind: "waiting" }
+  | { kind: "running" }
+  | { kind: "done"; outputPath: string; sizeBytes: number }
+  | { kind: "failed"; message: string }
+  | { kind: "cancelled" };
+
+/** Mirrors `QueueItem` in src-tauri/src/queue.rs: one file sent from Explorer's right-click menu. */
+export interface QueueItem {
+  id: number;
+  path: string;
+  presetId: string;
+  presetLabel: string;
+  status: QueueStatus;
+  /** Set once compressing has started; matches `JobProgress.jobId`. */
+  jobId: number | null;
+}
+
+/** Keep in sync with `VIDEO_EXTENSIONS` in src-tauri/src/shell_menu.rs. */
 export const VIDEO_EXTENSIONS = ["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "ts"];

@@ -3,6 +3,8 @@
 //! Bonsai lives in the tray. Closing the window destroys its webview (that's where most of the memory goes);
 //! clicking the tray icon builds a fresh window from the config in `tauri.conf.json`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewWindowBuilder};
@@ -20,16 +22,28 @@ pub fn show_main_window(app: &AppHandle) {
         return;
     }
 
+    // Building the webview lets Windows process other messages meanwhile, so this function can be re-entered
+    // (e.g. the next right-clicked file arriving) before the window exists. A second window with the same
+    // label would crash, so later calls just return: the window being built will show up anyway.
+    // `swap(true)` sets the flag and returns its previous value in one step.
+    if OPENING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     // `windows[0]` is the window described in tauri.conf.json (it has `"create": false`, so Tauri
     // doesn't build it at startup: we do, here, when it's wanted).
-    let Some(config) = app.config().app.windows.first() else { return };
-    match WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build()) {
-        Ok(window) => {
-            let _ = window.set_focus();
+    if let Some(config) = app.config().app.windows.first() {
+        match WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build()) {
+            Ok(window) => {
+                let _ = window.set_focus();
+            }
+            Err(e) => eprintln!("could not open the window: {e}"),
         }
-        Err(e) => eprintln!("could not open the window: {e}"),
     }
+    OPENING.store(false, Ordering::SeqCst);
 }
+
+/// True while `show_main_window` is building the window.
+static OPENING: AtomicBool = AtomicBool::new(false);
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
