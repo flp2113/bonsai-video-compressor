@@ -11,3 +11,6 @@ vite.config.ts.timestamp-*
 
 # FFmpeg sidecars are fetched by scripts/fetch-ffmpeg.ps1, never committed
 /src-tauri/binaries/*.exe
+# Output of scripts/build-ffmpeg.sh
+/build-ffmpeg
+/dist

@@ -1,0 +1,61 @@
+# Builds Bonsai's slim LGPL FFmpeg (scripts/build-ffmpeg.sh) and, when asked, publishes it as a GitHub release
+# that scripts/fetch-ffmpeg.ps1 downloads. Run it from the Actions tab ("Run workflow") when updating FFmpeg.
+name: FFmpeg build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the build as a GitHub release"
+        type: boolean
+        default: false
+      build:
+        description: "Build number for the release tag (ffmpeg-<version>-bonsai<build>)"
+        default: "1"
+  # Any change to the build checks that it still compiles (without publishing).
+  push:
+    paths: [scripts/build-ffmpeg.sh, .github/workflows/ffmpeg.yml]
+
+permissions:
+  contents: write # only needed to create the release
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cross-compiler and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nasm meson ninja-build cmake pkg-config
+
+      # The dependencies change rarely; reuse them between runs (the key changes with the build script).
+      - uses: actions/cache@v4
+        with:
+          path: build-ffmpeg/prefix
+          key: ffmpeg-deps-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+
+      - name: Build
+        run: bash scripts/build-ffmpeg.sh
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum ffmpeg.exe ffprobe.exe BUILD-INFO.txt > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-bonsai
+          path: dist/
+
+      - name: Publish release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -m1 '^FFMPEG_VERSION=' scripts/build-ffmpeg.sh | cut -d'"' -f2)
+          tag="ffmpeg-${version}-bonsai${{ inputs.build }}"
+          gh release create "$tag" dist/ffmpeg.exe dist/ffprobe.exe dist/BUILD-INFO.txt dist/SHA256SUMS \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "FFmpeg for Bonsai ${version} (build ${{ inputs.build }})" \
+            --notes "Slim LGPL FFmpeg bundled with Bonsai. Not an app release: it is downloaded by scripts/fetch-ffmpeg.ps1 when building Bonsai. See BUILD-INFO.txt for the exact sources and configure flags."

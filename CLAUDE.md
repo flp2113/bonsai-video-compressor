@@ -1,16 +1,20 @@
 # Bonsai Video Compressor
 
 Open-source (MIT), ultra-lightweight, Windows-first video compressor. One job: compress a video
-to fit a destination preset (Discord Free 10 MB, Nitro Basic 50 MB, Nitro 500 MB, X, Instagram, YouTube).
+to fit a destination preset (Discord Free 20 MB, Nitro Basic 50 MB, Nitro 500 MB, X, Instagram, YouTube).
 Started from the system tray drop window or the Explorer right-click menu.
 
 ## Stack
 - Tauri 2 (Rust, `src-tauri/`) + SvelteKit/Svelte 5 + TypeScript (`src/`, static adapter, no SSR)
-- FFmpeg/ffprobe shipped as Tauri sidecars (target: custom minimal **LGPL** build — never add GPL
-  encoders like libx264/libx265; use NVENC/QSV/AMF with `h264_mf` fallback)
+- FFmpeg/ffprobe shipped as Tauri sidecars: our own slim **LGPL** build (`scripts/build-ffmpeg.sh`, built by
+  `.github/workflows/ffmpeg.yml`, published as a `ffmpeg-<version>-bonsai<N>` prerelease). Never add GPL/nonfree
+  parts (libx264/libx265). Encoders: NVENC/QSV/AMF with `h264_mf` fallback, plus `aac`.
+- If Bonsai starts using a new FFmpeg feature (filter, codec, format), add it to the lists in
+  `scripts/build-ffmpeg.sh`, run the workflow with `publish`, and bump the tag in `scripts/fetch-ffmpeg.ps1`.
 
 ## Commands
-- `./scripts/fetch-ffmpeg.ps1` — first-time setup: downloads LGPL ffmpeg/ffprobe into `src-tauri/binaries/` (gitignored)
+- `./scripts/fetch-ffmpeg.ps1` — first-time setup: downloads our slim ffmpeg/ffprobe into `src-tauri/binaries/` (gitignored)
+- `gh workflow run ffmpeg.yml -f publish=true -f build=N` — rebuild and publish FFmpeg (bump N each time)
 - `npm run tauri dev` — run app with hot reload
 - `npm run check` — Svelte/TS type check
 - `cargo test --manifest-path src-tauri/Cargo.toml` — Rust unit tests

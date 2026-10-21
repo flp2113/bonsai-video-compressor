@@ -349,7 +349,9 @@ mod tests {
         // 60 s of noisy 1080p60 + a tone: forces the planner to drop to 720p30.
         let status = Command::new(&ffmpeg)
             .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60,noise=alls=12:allf=t+u"])
-            .args(["-f", "lavfi", "-i", "sine=frequency=440", "-t", "60", "-c:v", "libopenh264", "-b:v", "12M"])
+            // h264_mf: the bundled FFmpeg only has hardware/Windows H.264 encoders (no libopenh264/libx264).
+            .args(["-f", "lavfi", "-i", "sine=frequency=440", "-t", "60", "-c:v", "h264_mf", "-pix_fmt", "nv12"])
+            .args(["-b:v", "12M"])
             .args(["-c:a", "aac", src.to_str().unwrap()])
             .status()
             .unwrap();

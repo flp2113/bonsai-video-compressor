@@ -1,28 +1,39 @@
-# Downloads a prebuilt LGPL FFmpeg (BtbN/FFmpeg-Builds) and installs ffmpeg/ffprobe as Tauri sidecars.
-# Dev-only stopgap until we ship our own minimal LGPL build (see milestone 10).
+# Downloads Bonsai's slim LGPL FFmpeg (built by .github/workflows/ffmpeg.yml from scripts/build-ffmpeg.sh)
+# from this repo's GitHub releases, verifies the checksums, and installs ffmpeg/ffprobe as Tauri sidecars.
 # Never swap in a GPL build (e.g. gyan "full_build"): it would force the whole app to GPL.
 param(
-    [string]$Version = "9.0"
+    [string]$Tag = "ffmpeg-n9.0.2-bonsai1"
 )
 $ErrorActionPreference = "Stop"
 
-$asset = "ffmpeg-n$Version-latest-win64-lgpl-$Version"
-$url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$asset.zip"
+$base = "https://github.com/flp2113/bonsai-video-compressor/releases/download/$Tag"
 $triple = "x86_64-pc-windows-msvc"
 $binDir = Join-Path $PSScriptRoot "..\src-tauri\binaries"
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("bonsai-ffmpeg-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
-    Write-Host "Downloading $url"
-    Invoke-WebRequest -Uri $url -OutFile (Join-Path $work "ffmpeg.zip")
-    Expand-Archive -Path (Join-Path $work "ffmpeg.zip") -DestinationPath $work
+    foreach ($file in "SHA256SUMS", "ffmpeg.exe", "ffprobe.exe") {
+        Write-Host "Downloading $base/$file"
+        Invoke-WebRequest -Uri "$base/$file" -OutFile (Join-Path $work $file)
+    }
+
+    # Each line of SHA256SUMS is "<hash>  <file name>".
+    $expected = @{}
+    foreach ($line in Get-Content (Join-Path $work "SHA256SUMS")) {
+        $hash, $name = $line -split "\s+\*?", 2
+        $expected[$name.Trim()] = $hash.ToLower()
+    }
+    foreach ($tool in "ffmpeg", "ffprobe") {
+        $actual = (Get-FileHash (Join-Path $work "$tool.exe") -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected["$tool.exe"]) { throw "Checksum mismatch for $tool.exe" }
+    }
 
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     foreach ($tool in "ffmpeg", "ffprobe") {
-        Copy-Item (Join-Path $work "$asset\bin\$tool.exe") (Join-Path $binDir "$tool-$triple.exe") -Force
+        Copy-Item (Join-Path $work "$tool.exe") (Join-Path $binDir "$tool-$triple.exe") -Force
     }
-    Write-Host "Installed ffmpeg/ffprobe sidecars into $((Resolve-Path $binDir).Path)"
+    Write-Host "Installed ffmpeg/ffprobe ($Tag) into $((Resolve-Path $binDir).Path)"
 }
 finally {
     Remove-Item -Recurse -Force $work
