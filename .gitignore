@@ -14,3 +14,6 @@ vite.config.ts.timestamp-*
 # Output of scripts/build-ffmpeg.sh
 /build-ffmpeg
 /dist
+
+# Personal Claude Code instructions (kept local)
+/CLAUDE.md

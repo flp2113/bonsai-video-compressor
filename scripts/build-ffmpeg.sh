@@ -5,7 +5,7 @@
 #   sudo apt install mingw-w64 nasm meson ninja-build cmake pkg-config git curl make
 # Output goes to ./dist: ffmpeg.exe, ffprobe.exe, BUILD-INFO.txt (exact sources and configure flags).
 #
-# Only what Bonsai uses is enabled (see "What Bonsai needs" in the milestone 10 plan / CLAUDE.md).
+# Only what Bonsai uses is enabled (see the lists before ./configure below).
 # Never add --enable-gpl, --enable-nonfree, libx264 or libx265: the build must stay LGPL so it can ship
 # with an MIT app.
 set -euo pipefail
