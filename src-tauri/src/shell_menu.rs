@@ -61,7 +61,7 @@ pub fn entries(exe: &str) -> Vec<RegValue> {
 }
 
 /// Writes the menu. Safe to call on every start: it just overwrites the same values (and fixes the exe path
-/// if the app moved). The uninstaller removes the keys again (milestone 11).
+/// if the app moved). The uninstaller removes the keys again (src-tauri/windows/hooks.nsh).
 #[cfg(windows)]
 pub fn register(exe: &str) -> windows_registry::Result<()> {
     let root = windows_registry::CURRENT_USER;
@@ -69,17 +69,6 @@ pub fn register(exe: &str) -> windows_registry::Result<()> {
         root.create(&value.key)?.set_string(value.name, &value.value)?;
     }
     Ok(())
-}
-
-/// Removes everything `register` wrote.
-#[cfg(windows)]
-#[allow(dead_code)] // used by the uninstaller step in milestone 11
-pub fn unregister() {
-    let root = windows_registry::CURRENT_USER;
-    for ext in VIDEO_EXTENSIONS {
-        let _ = root.remove_tree(format!(r"{CLASSES}\SystemFileAssociations\.{ext}\shell\Bonsai"));
-    }
-    let _ = root.remove_tree(format!(r"{CLASSES}\{SUBMENU_KEY}"));
 }
 
 /// Reads `--preset <id> <file>...` from the command line. `None` if it's a normal launch (or an unknown preset).
@@ -148,6 +137,21 @@ mod tests {
         };
         assert_eq!(label("discord-free"), "Discord Free (20 MB)");
         assert_eq!(label("instagram"), "Instagram");
+    }
+
+    /// The uninstaller lists the keys by hand (NSIS can't read our Rust), so check it removes all of them.
+    #[test]
+    fn uninstaller_removes_every_menu_key_and_the_autostart_entry() {
+        // `include_str!` pastes the file's text in at compile time, like importing a file `?raw` in Vite.
+        let hooks = include_str!("../windows/hooks.nsh");
+        for ext in VIDEO_EXTENSIONS {
+            let line = format!(r#"DeleteRegKey HKCU "{CLASSES}\SystemFileAssociations\.{ext}\shell\Bonsai""#);
+            assert!(hooks.contains(&line), "hooks.nsh is missing: {line}");
+        }
+        assert!(hooks.contains(&format!(r#"DeleteRegKey HKCU "{CLASSES}\{SUBMENU_KEY}""#)));
+        // The autostart plugin names its Run value after the product name.
+        assert!(include_str!("../tauri.conf.json").contains(r#""productName": "Bonsai""#));
+        assert!(hooks.contains(r#"CurrentVersion\Run" "Bonsai""#));
     }
 
     #[test]

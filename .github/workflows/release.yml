@@ -1,0 +1,95 @@
+# Builds the Windows installer and, for a version tag, creates a *draft* GitHub release with it.
+# Release: bump the version in tauri.conf.json, src-tauri/Cargo.toml and package.json, then push a tag `vX.Y.Z`.
+# The draft is reviewed and published by hand on GitHub. "Run workflow" (no tag) only builds, as a dry run.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # only needed to create the release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check the version
+        run: |
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $npm = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($conf -ne $npm -or $conf -ne $cargo) {
+            throw "Versions differ: tauri.conf.json $conf, package.json $npm, Cargo.toml $cargo"
+          }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$conf") {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match version $conf"
+          }
+          "VERSION=$conf" >> $env:GITHUB_ENV
+
+      - run: npm ci
+
+      - name: Download our slim FFmpeg
+        run: ./scripts/fetch-ffmpeg.ps1
+
+      - name: Test
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run check
+
+      - name: Build the installer
+        run: npm run tauri build
+
+      - name: Collect the files
+        run: |
+          $installer = "Bonsai_$($env:VERSION)_x64-setup.exe"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/$installer" dist/
+          # Same format as sha256sum: "<hash>  <file name>".
+          $hash = (Get-FileHash "dist/$installer" -Algorithm SHA256).Hash.ToLower()
+          Set-Content dist/SHA256SUMS "$hash  $installer"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bonsai-installer
+          path: dist/
+
+      - name: Create the draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The FFmpeg release this installer bundles, read from fetch-ffmpeg.ps1's default.
+          $ffmpegTag = (Select-String -Path scripts/fetch-ffmpeg.ps1 -Pattern '\$Tag = "(.+)"').Matches[0].Groups[1].Value
+          $repo = $env:GITHUB_REPOSITORY
+          $notes = @"
+          ## Install
+          Download **Bonsai_$($env:VERSION)_x64-setup.exe** and run it. No admin rights needed.
+
+          The installer isn't code-signed yet, so Windows SmartScreen may say it "protected your PC":
+          click **More info**, then **Run anyway**. You can check the download against ``SHA256SUMS``.
+
+          ## Third-party software
+          Bonsai bundles FFmpeg (LGPL-2.1-or-later), built by this repository:
+          [$ffmpegTag](https://github.com/$repo/releases/tag/$ffmpegTag), with its sources and build flags in BUILD-INFO.txt.
+          See [THIRD_PARTY_NOTICES.md](https://github.com/$repo/blob/$env:GITHUB_REF_NAME/THIRD_PARTY_NOTICES.md).
+          "@
+          gh release create $env:GITHUB_REF_NAME dist/* --draft --title "Bonsai $($env:VERSION)" --notes $notes

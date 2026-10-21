@@ -26,14 +26,31 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "Felipe Guerzoni",
+    "copyright": "Copyright (c) 2026 Felipe Guerzoni. MIT License.",
+    "homepage": "https://github.com/flp2113/bonsai-video-compressor",
+    "license": "MIT",
+    "shortDescription": "Compress videos to fit Discord, X, Instagram and YouTube",
+    "longDescription": "Bonsai compresses a video to fit a destination's size limit, using your GPU's encoder. Drop a file on its window or right-click it in Explorer.",
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    }
   }
 }

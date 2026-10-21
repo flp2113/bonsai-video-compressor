@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="1024" height="1024" shape-rendering="crispEdges">
+  <!-- Bonsai app icon: 16x16 pixel art, one 1x1 square per pixel. Regenerate every size with:
+       npx tauri icon src-tauri/icons/source/icon.svg
+       Pixel map (. = transparent):
+         ................
+         .....GGGGG......
+         ...GGLLGGGGG....
+         ..GLLGGGGGGGGG..
+         .GGLGGGGGGGLLGG.
+         .GGGGGGGDGGLGGG.
+         ..GGGDDGGDGGGG..
+         ...DD.TT.DDDD...
+         ......TT........
+         .......TT.......
+         .......TT.......
+         ..RRRRRRRRRRRR..
+         ...PPPPPPPPPP...
+         ...PPPPPPPPPP...
+         ....SSSSSSSS....
+         ................
+       L = leaf highlight #5cc27f
+       G = leaves #2f9e5b
+       D = leaf shadow #1f7a45
+       T = trunk #7a5236
+       R = pot rim #5f6b7a
+       P = pot #4a5568
+       S = pot base #3a4352
+  -->
+  <path fill="#5cc27f" d="M5 2h1v1h-1zM6 2h1v1h-1zM3 3h1v1h-1zM4 3h1v1h-1zM3 4h1v1h-1zM11 4h1v1h-1zM12 4h1v1h-1zM11 5h1v1h-1z"/>
+  <path fill="#2f9e5b" d="M5 1h1v1h-1zM6 1h1v1h-1zM7 1h1v1h-1zM8 1h1v1h-1zM9 1h1v1h-1zM3 2h1v1h-1zM4 2h1v1h-1zM7 2h1v1h-1zM8 2h1v1h-1zM9 2h1v1h-1zM10 2h1v1h-1zM11 2h1v1h-1zM2 3h1v1h-1zM5 3h1v1h-1zM6 3h1v1h-1zM7 3h1v1h-1zM8 3h1v1h-1zM9 3h1v1h-1zM10 3h1v1h-1zM11 3h1v1h-1zM12 3h1v1h-1zM13 3h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1zM5 4h1v1h-1zM6 4h1v1h-1zM7 4h1v1h-1zM8 4h1v1h-1zM9 4h1v1h-1zM10 4h1v1h-1zM13 4h1v1h-1zM14 4h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1zM7 5h1v1h-1zM9 5h1v1h-1zM10 5h1v1h-1zM12 5h1v1h-1zM13 5h1v1h-1zM14 5h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1zM7 6h1v1h-1zM8 6h1v1h-1zM10 6h1v1h-1zM11 6h1v1h-1zM12 6h1v1h-1zM13 6h1v1h-1z"/>
+  <path fill="#1f7a45" d="M8 5h1v1h-1zM5 6h1v1h-1zM6 6h1v1h-1zM9 6h1v1h-1zM3 7h1v1h-1zM4 7h1v1h-1zM9 7h1v1h-1zM10 7h1v1h-1zM11 7h1v1h-1zM12 7h1v1h-1z"/>
+  <path fill="#7a5236" d="M6 7h1v1h-1zM7 7h1v1h-1zM6 8h1v1h-1zM7 8h1v1h-1zM7 9h1v1h-1zM8 9h1v1h-1zM7 10h1v1h-1zM8 10h1v1h-1z"/>
+  <path fill="#5f6b7a" d="M2 11h1v1h-1zM3 11h1v1h-1zM4 11h1v1h-1zM5 11h1v1h-1zM6 11h1v1h-1zM7 11h1v1h-1zM8 11h1v1h-1zM9 11h1v1h-1zM10 11h1v1h-1zM11 11h1v1h-1zM12 11h1v1h-1zM13 11h1v1h-1z"/>
+  <path fill="#4a5568" d="M3 12h1v1h-1zM4 12h1v1h-1zM5 12h1v1h-1zM6 12h1v1h-1zM7 12h1v1h-1zM8 12h1v1h-1zM9 12h1v1h-1zM10 12h1v1h-1zM11 12h1v1h-1zM12 12h1v1h-1zM3 13h1v1h-1zM4 13h1v1h-1zM5 13h1v1h-1zM6 13h1v1h-1zM7 13h1v1h-1zM8 13h1v1h-1zM9 13h1v1h-1zM10 13h1v1h-1zM11 13h1v1h-1zM12 13h1v1h-1z"/>
+  <path fill="#3a4352" d="M4 14h1v1h-1zM5 14h1v1h-1zM6 14h1v1h-1zM7 14h1v1h-1zM8 14h1v1h-1zM9 14h1v1h-1zM10 14h1v1h-1zM11 14h1v1h-1z"/>
+</svg>
