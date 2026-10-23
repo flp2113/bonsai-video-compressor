@@ -62,6 +62,16 @@ pub fn run() {
             // Closing the window normally destroys it (freeing the webview's memory) while the app stays in
             // the tray. During a compression we only hide it, so its progress is still there when reopened.
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // Alt+F4 on the popup: same as its ✕ during a batch, just tuck it away.
+                if window.label() == popup::POPUP_WINDOW {
+                    if let Some(popup) = window.app_handle().get_webview_window(popup::POPUP_WINDOW) {
+                        if jobs::is_busy(window.app_handle()) {
+                            api.prevent_close();
+                            popup::hide(&popup);
+                        }
+                    }
+                    return;
+                }
                 if jobs::is_busy(window.app_handle()) {
                     api.prevent_close();
                     let _ = window.hide();

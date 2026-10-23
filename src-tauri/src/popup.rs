@@ -69,6 +69,18 @@ fn show_without_focus(window: &WebviewWindow) {
     let _ = window.show();
 }
 
+/// Hides the popup. It must be hidden the same way it was shown: Tauri keeps its own "visible" flag, which
+/// never saw the Win32 show above, so `window.hide()` would think it's already hidden and do nothing.
+pub fn hide(window: &WebviewWindow) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        unsafe { ShowWindow(hwnd.0 as _, SW_HIDE) };
+        return;
+    }
+    let _ = window.hide();
+}
+
 /// Where the popup's top-left corner goes so its bottom-right corner sits `margin` inside the work area
 /// (the screen minus the taskbar). All values are physical pixels. Pure, so it's unit-tested.
 fn corner_position(area: (i32, i32, u32, u32), size: (u32, u32), margin: u32) -> (i32, i32) {
@@ -109,7 +121,7 @@ pub fn popup_ready(window: WebviewWindow) {
 /// ✕ during a batch: tuck the popup away; the batch carries on and the tray icon brings it back.
 #[tauri::command]
 pub fn hide_popup(window: WebviewWindow) {
-    let _ = window.hide();
+    hide(&window);
 }
 
 /// The summary was closed or timed out: forget the finished files and free the window's memory.
