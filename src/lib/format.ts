@@ -10,6 +10,16 @@ export function formatSize(bytes: number) {
   return `${mb.toFixed(1)} MB`;
 }
 
+const plural = (n: number, word: string) => (n === 1 ? `1 ${word}` : `${n} ${word}s`);
+
+/** Title of a finished right-click batch, e.g. "3 videos ready", "2 ready, 1 failed", "Couldn't compress 2 videos". */
+export function batchTitle(done: number, failed: number) {
+  if (done === 0 && failed === 0) return "Nothing compressed";
+  if (done === 0) return `Couldn't compress ${plural(failed, "video")}`;
+  if (failed === 0) return `${plural(done, "video")} ready`;
+  return `${done} ready, ${failed} failed`;
+}
+
 /** 75.4 → "1:15" */
 export function formatDuration(seconds: number) {
   const s = Math.floor(seconds);

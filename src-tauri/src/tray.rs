@@ -117,7 +117,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Bonsai")
         .menu(&build_menu(app)?)
-        // Left-click opens the window; the menu is on right-click.
+        // Left-click opens the popup or the window; the menu is on right-click.
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
@@ -133,7 +133,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                show_main_window(tray.app_handle());
+                let app = tray.app_handle();
+                // During a right-click batch (or while its summary is up) the corner popup is what you want.
+                if crate::popup::is_active(app) {
+                    crate::popup::show_popup(app);
+                } else {
+                    show_main_window(app);
+                }
             }
         });
 

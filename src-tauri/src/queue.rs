@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{jobs, notify, presets, probe, tray};
+use crate::{jobs, popup, presets, probe};
 
 /// `tag = "kind"` makes serde write `{ "kind": "done", "outputPath": ..., "sizeBytes": ... }`,
 /// which is exactly a TypeScript discriminated union.
@@ -32,6 +32,8 @@ pub struct QueueItem {
     preset_id: String,
     preset_label: &'static str,
     status: QueueStatus,
+    /// The original file's size, known once it has been read; the popup's summary shows "before → after".
+    original_bytes: Option<u64>,
     /// Set once the compression has started, so the UI can match `job-progress` events.
     job_id: Option<u32>,
 }
@@ -53,6 +55,11 @@ impl Queue {
             .iter()
             .any(|item| matches!(item.status, QueueStatus::Waiting | QueueStatus::Running))
     }
+
+    /// Anything at all, finished or not? Finished items stay until the popup's summary is dismissed.
+    pub fn has_items(&self) -> bool {
+        !self.items.lock().unwrap().is_empty()
+    }
 }
 
 fn emit_changed(app: &AppHandle) {
@@ -73,7 +80,7 @@ fn update(app: &AppHandle, id: u32, change: impl FnOnce(&mut QueueItem)) {
     emit_changed(app);
 }
 
-/// Adds files to the queue, shows the window, and makes sure the worker is running.
+/// Adds files to the queue, shows the corner popup, and makes sure the worker is running.
 pub fn enqueue(app: &AppHandle, preset_id: &str, paths: Vec<String>) {
     let Some(preset) = presets::find(preset_id) else { return };
     let queue = app.state::<Queue>();
@@ -87,6 +94,7 @@ pub fn enqueue(app: &AppHandle, preset_id: &str, paths: Vec<String>) {
                 preset_id: preset.id.to_string(),
                 preset_label: preset.label,
                 status: QueueStatus::Waiting,
+                original_bytes: None,
                 job_id: None,
             });
         }
@@ -95,7 +103,7 @@ pub fn enqueue(app: &AppHandle, preset_id: &str, paths: Vec<String>) {
         !queue.worker_running.swap(true, Ordering::SeqCst)
     };
     emit_changed(app);
-    tray::show_main_window(app);
+    popup::show_popup(app);
     if start_worker {
         tauri::async_runtime::spawn(worker(app.clone()));
     }
@@ -103,8 +111,6 @@ pub fn enqueue(app: &AppHandle, preset_id: &str, paths: Vec<String>) {
 
 /// Works through waiting items one at a time until none are left.
 async fn worker(app: AppHandle) {
-    // What this run of the worker achieved, for the one notification at the end.
-    let (mut done, mut total_bytes, mut failed) = (0, 0, 0);
     loop {
         let next = {
             let queue = app.state::<Queue>();
@@ -124,18 +130,12 @@ async fn worker(app: AppHandle) {
         emit_changed(&app);
 
         let status = run_item(&app, id, path, &preset_id).await;
-        match &status {
-            QueueStatus::Done { size_bytes, .. } => {
-                done += 1;
-                total_bytes += size_bytes;
-            }
-            QueueStatus::Failed { .. } => failed += 1,
-            _ => {}
-        }
         update(&app, id, |item| item.status = status);
     }
-    if let Some((title, body)) = notify::queue_summary(done, total_bytes, failed) {
-        notify::show(&app, &title, &body);
+    // The popup now shows the summary (it works it out from the items). This replaces the old "videos ready"
+    // notification, so bring the popup back if it was hidden during the batch.
+    if popup::is_active(&app) {
+        popup::show_popup(&app);
     }
     jobs::free_window_if_idle(&app);
 }
@@ -151,6 +151,8 @@ async fn run_item(app: &AppHandle, id: u32, path: String, preset_id: &str) -> Qu
         Ok(info) => info,
         Err(message) => return QueueStatus::Failed { message },
     };
+    let size_bytes = info.size_bytes;
+    update(app, id, |item| item.original_bytes = Some(size_bytes));
     // Cancelled while we were reading the file? Don't start compressing it.
     if is_cancelled(app, id) {
         return QueueStatus::Cancelled;

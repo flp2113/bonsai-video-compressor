@@ -4,6 +4,7 @@ mod jobs;
 mod launch;
 mod notify;
 mod planner;
+mod popup;
 mod presets;
 mod probe;
 mod queue;
@@ -78,6 +79,10 @@ pub fn run() {
             queue::cancel_queue_item,
             queue::cancel_queue,
             queue::clear_queue,
+            popup::resize_popup,
+            popup::popup_ready,
+            popup::hide_popup,
+            popup::dismiss_popup,
             clipboard::copy_files_to_clipboard
         ])
         .build(context)

@@ -80,6 +80,8 @@ export interface QueueItem {
   presetId: string;
   presetLabel: string;
   status: QueueStatus;
+  /** The original file's size, once it has been read. */
+  originalBytes: number | null;
   /** Set once compressing has started; matches `JobProgress.jobId`. */
   jobId: number | null;
 }
