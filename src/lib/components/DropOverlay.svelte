@@ -1,4 +1,9 @@
-<div class="overlay" aria-hidden="true">
+<script lang="ts">
+  import { fade } from "svelte/transition";
+</script>
+
+<!-- `|global`: the overlay is added and removed by the page's `{#if}`, so it must animate with that block. -->
+<div class="overlay" aria-hidden="true" transition:fade|global={{ duration: 83 }}>
   <span>Drop to load</span>
 </div>
 

@@ -3,21 +3,28 @@
 //! It looks and behaves like a notification: no title bar, always on top, not in the taskbar, and it never
 //! takes the keyboard focus from the app you're using. The page itself is `src/routes/popup/+page.svelte`;
 //! it tells us its height (`resize_popup`) so the window always hugs its content above the taskbar.
+//!
+//! The window is transparent and the page draws the card (with its shadow) inside a 12 px transparent border.
+//! That's what lets the card really fade in and out: an opaque window would leave a grey box behind.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 use crate::queue::Queue;
 
 pub const POPUP_WINDOW: &str = "popup";
 
-/// Width in logical pixels (before Windows' display scaling). The height comes from the page.
+/// Width in logical pixels (before Windows' display scaling), including the page's 12 px transparent border on
+/// each side. The height comes from the page.
 const WIDTH: f64 = 360.0;
 /// Height used until the page reports its real one.
-const START_HEIGHT: f64 = 96.0;
-/// Gap between the popup and the screen edge / taskbar, in logical pixels.
-const MARGIN: f64 = 12.0;
+const START_HEIGHT: f64 = 120.0;
+/// Gap between the window and the screen edge / taskbar. Zero, because the page's transparent border already
+/// keeps the visible card 12 px away from them.
+const MARGIN: f64 = 0.0;
 
 /// True while `show_popup` is building the window (same re-entrancy guard as `tray::show_main_window`).
 static OPENING: AtomicBool = AtomicBool::new(false);
@@ -30,7 +37,11 @@ pub fn is_active(app: &AppHandle) -> bool {
 /// Shows the popup without focusing it, creating it if needed.
 pub fn show_popup(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(POPUP_WINDOW) {
-        show_without_focus(&window);
+        if !is_shown(&window) {
+            show_without_focus(&window);
+            // The page faded its card out before it was hidden; this tells it to fade back in.
+            let _ = app.emit_to(POPUP_WINDOW, "popup-shown", ());
+        }
         return;
     }
     if OPENING.swap(true, Ordering::SeqCst) {
@@ -41,8 +52,9 @@ pub fn show_popup(app: &AppHandle) {
         .title("Bonsai")
         .inner_size(WIDTH, START_HEIGHT)
         .decorations(false)
-        // On Windows 11 an undecorated window with a shadow also gets the system's rounded corners.
-        .shadow(true)
+        .transparent(true)
+        // The page draws the card's shadow; Windows' own would outline the whole (invisible) window.
+        .shadow(false)
         .resizable(false)
         .always_on_top(true)
         .skip_taskbar(true)
@@ -67,6 +79,16 @@ fn show_without_focus(window: &WebviewWindow) {
         return;
     }
     let _ = window.show();
+}
+
+/// Whether the popup is on screen. Asked of Windows directly, for the same reason as `hide` below.
+fn is_shown(window: &WebviewWindow) -> bool {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        return unsafe { IsWindowVisible(hwnd.0 as _) } != 0;
+    }
+    window.is_visible().unwrap_or(false)
 }
 
 /// Hides the popup. It must be hidden the same way it was shown: Tauri keeps its own "visible" flag, which

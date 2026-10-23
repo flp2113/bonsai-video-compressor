@@ -20,6 +20,13 @@
   --gutter: 20px;
   --radius: 6px;
 
+  /* Motion, borrowed from Windows' own controls (WinUI): quick color changes on hover and press, a slightly longer
+     decelerating ease when something opens or appears. Only for things that answer what you did. */
+  --ease: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --fast: 83ms;
+  --medium: 167ms;
+  --slow: 1000ms;
+
   color-scheme: light;
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-size: var(--text-md);
@@ -59,6 +66,95 @@ body {
 button {
   font: inherit;
   color: inherit;
+  transition:
+    background-color var(--fast) linear,
+    border-color var(--fast) linear,
+    color var(--fast) linear,
+    opacity var(--fast) linear;
+}
+
+/* Shared buttons. Components only set their own size and spacing on top of these. */
+.primary,
+.secondary {
+  padding: 8px 20px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.primary {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 90%, var(--text));
+}
+.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+.secondary {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.secondary:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+.secondary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--line) 45%, var(--surface));
+}
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.wide {
+  width: 100%;
+  padding-block: 11px;
+}
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.icon-button:hover {
+  background: color-mix(in srgb, var(--line) 50%, transparent);
+  color: var(--text);
+}
+.icon-button:active {
+  background: var(--line);
+}
+.icon-button svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 :focus-visible {

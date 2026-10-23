@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import StatusIcon from "$lib/components/StatusIcon.svelte";
   import { fileName, formatSize } from "$lib/format";
   import type { JobProgress, QueueItem } from "$lib/types";
 
@@ -64,6 +65,7 @@
     {#each items as item (item.id)}
       {@const status = item.status}
       <li>
+        <StatusIcon kind={status.kind} />
         <div class="file">
           <span class="name" title={item.path}>{fileName(item.path)}</span>
           {#if presetLabels.length > 1}
@@ -170,7 +172,7 @@
   }
   li {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto 24px;
+    grid-template-columns: 14px minmax(0, 1fr) auto 24px;
     align-items: center;
     gap: 12px;
     padding: 10px 0;
@@ -206,7 +208,7 @@
   .bar div {
     height: 100%;
     background: var(--accent);
-    transition: width 0.3s;
+    transition: width 0.4s var(--ease);
   }
   .percent {
     min-width: 34px;
@@ -224,31 +226,6 @@
     color: var(--danger);
   }
 
-  .icon-button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .icon-button:hover {
-    background: color-mix(in srgb, var(--line) 50%, transparent);
-    color: var(--text);
-  }
-  .icon-button svg {
-    width: 12px;
-    height: 12px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-  }
-
   footer {
     display: flex;
     flex-direction: column;
@@ -259,29 +236,7 @@
     grid-template-columns: 1fr 1fr;
     gap: 8px;
   }
-  .primary,
-  .secondary {
-    padding: 11px 20px;
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  .wide {
-    width: 100%;
-  }
-  .primary {
-    border: none;
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-  }
-  .primary:hover {
-    background: color-mix(in srgb, var(--accent) 88%, var(--text));
-  }
-  .secondary {
-    border: 1px solid var(--line);
-    background: var(--surface);
-  }
-  .secondary:hover {
-    border-color: var(--muted);
+  .pair button {
+    padding-block: 11px;
   }
 </style>

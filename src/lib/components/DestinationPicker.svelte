@@ -134,8 +134,10 @@
   .destination:hover:not(:disabled) {
     background: color-mix(in srgb, var(--line) 35%, transparent);
   }
+  /* Locked while compressing: dimmed, so it's clear the choice can't change right now. */
   .destination:disabled,
   .tiers button:disabled {
+    opacity: 0.6;
     cursor: default;
   }
 
@@ -145,7 +147,9 @@
     flex: none;
     border: 1.5px solid var(--muted);
     border-radius: 50%;
-    transition: border-width 0.12s, border-color 0.12s;
+    transition:
+      border-width var(--medium) var(--ease),
+      border-color var(--medium) var(--ease);
   }
   .selected .dot {
     border: 5px solid var(--accent);

@@ -70,13 +70,19 @@
   .details {
     display: grid;
     grid-template-rows: 0fr;
-    transition: grid-template-rows 0.2s ease-out;
+    transition: grid-template-rows var(--medium) var(--ease);
   }
   .details.open {
     grid-template-rows: 1fr;
   }
+  /* The text fades as the panel opens, so it doesn't look clipped while the height animates. */
   .inner {
     overflow: hidden;
+    opacity: 0;
+    transition: opacity var(--medium) linear;
+  }
+  .open .inner {
+    opacity: 1;
   }
   .columns {
     display: grid;

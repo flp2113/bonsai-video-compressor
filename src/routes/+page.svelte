@@ -4,6 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { fade } from "svelte/transition";
   import DestinationPicker from "$lib/components/DestinationPicker.svelte";
   import DetailsPanel from "$lib/components/DetailsPanel.svelte";
   import DropOverlay from "$lib/components/DropOverlay.svelte";
@@ -46,6 +47,8 @@
   const queueBusy = $derived(queue.some((i) => i.status.kind === "waiting" || i.status.kind === "running"));
 
   const preset = $derived(presets.find((p) => p.id === presetId));
+  /** Which screen is showing; the window fades it in when this changes. */
+  const screen = $derived(queue.length > 0 ? "queue" : info ? info.path : "drop");
 
   invoke<PresetSummary[]>("list_presets").then((list) => {
     presets = list;
@@ -133,6 +136,9 @@
 
   let recopied = $state(false);
   let copyError = $state("");
+  /** Briefly true after "Copy file" is clicked, so the button confirms it. */
+  let justCopied = $state(false);
+  let justCopiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Puts the finished file on the clipboard again (e.g. after copying something else meanwhile). */
   async function copyDone() {
@@ -141,6 +147,9 @@
       await invoke("copy_files_to_clipboard", { paths: [done.outputPath] });
       recopied = true;
       copyError = "";
+      justCopied = true;
+      clearTimeout(justCopiedTimer);
+      justCopiedTimer = setTimeout(() => (justCopied = false), 2000);
     } catch (e) {
       copyError = String(e);
     }
@@ -220,7 +229,9 @@
   <DropOverlay />
 {/if}
 
-<main>
+<!-- Each screen fades in when you get to it (a dropped video, a right-click batch, back to the drop screen). -->
+{#key screen}
+<main in:fade={{ duration: 167 }}>
   {#if queue.length > 0}
     <QueueView items={queue} />
   {:else if !info}
@@ -275,16 +286,16 @@
           actualBytes={done?.sizeBytes ?? null}
         />
         {#if job}
-          <p class="status">{progressText(job)}</p>
+          <p class="status" in:fade={{ duration: 167 }}>{progressText(job)}</p>
         {:else if done}
-          <p class="status">
+          <p class="status" in:fade={{ duration: 167 }}>
             Saved as <strong>{fileName(done.outputPath)}</strong>
             <span class="muted">
               {done.copied || recopied ? "On the clipboard, paste it anywhere" : copyError || "Ready to share"}
             </span>
           </p>
         {:else}
-          <p class="status muted">{planSentence(plan, info, preset)}</p>
+          <p class="status muted" in:fade={{ duration: 167 }}>{planSentence(plan, info, preset)}</p>
         {/if}
         {#each plan.warnings as warning}
           <p class="warning">{warning}</p>
@@ -299,19 +310,20 @@
 
     <footer>
       {#if job}
-        <button class="secondary wide" onclick={cancel}>Cancel</button>
+        <button class="secondary wide" onclick={cancel} in:fade={{ duration: 167 }}>Cancel</button>
       {:else if done}
-        <div class="pair">
+        <div class="pair" in:fade={{ duration: 167 }}>
           <!-- Already copied automatically, so copying again is the secondary action. -->
           <button class="primary" onclick={() => done && revealItemInDir(done.outputPath)}>Show in folder</button>
-          <button class="secondary" onclick={copyDone}>Copy file</button>
+          <button class="secondary" onclick={copyDone}>{justCopied ? "Copied" : "Copy file"}</button>
         </div>
       {:else}
-        <button class="primary wide" onclick={compress} disabled={!plan}>Compress</button>
+        <button class="primary wide" onclick={compress} disabled={!plan} in:fade={{ duration: 167 }}>Compress</button>
       {/if}
     </footer>
   {/if}
 </main>
+{/key}
 
 <style>
   main {
@@ -375,6 +387,7 @@
     white-space: nowrap;
   }
 
+  /* The shared .link (theme.css), laid out for the header rows. */
   .link {
     display: inline-flex;
     align-items: center;
@@ -382,18 +395,7 @@
     flex: none;
     padding: 2px 4px;
     margin-right: -4px;
-    border: none;
     border-radius: 4px;
-    background: none;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .link:hover:not(:disabled) {
-    text-decoration: underline;
-  }
-  .link:disabled {
-    color: var(--muted);
-    cursor: default;
   }
   .chevron {
     width: 12px;
@@ -403,7 +405,7 @@
     stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: transform 0.2s;
+    transition: transform var(--medium) var(--ease);
   }
   .chevron.open {
     transform: rotate(180deg);
@@ -437,36 +439,5 @@
   }
   .pair button {
     padding-block: 11px;
-  }
-
-  .primary,
-  .secondary {
-    padding: 8px 20px;
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  .wide {
-    width: 100%;
-    padding-block: 11px;
-  }
-  .primary {
-    border: none;
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-  }
-  .primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 88%, var(--text));
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .secondary {
-    border: 1px solid var(--line);
-    background: var(--surface);
-  }
-  .secondary:hover {
-    border-color: var(--muted);
   }
 </style>
