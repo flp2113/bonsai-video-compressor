@@ -2,17 +2,6 @@
 
 use serde::Serialize;
 
-/// How a preset decides how many bits to spend.
-///
-/// Rust enums can carry data in each variant (like a TS discriminated union):
-/// `Budget::MaxBytes(20_000_000)` vs `Budget::Quality { kbps_1080p30: 5_000 }`.
-pub enum Budget {
-    /// Output must not exceed this many bytes (Discord, X).
-    MaxBytes(u64),
-    /// No size cap: aim for this video bitrate at 1080p30, scaled for other resolutions/frame rates.
-    Quality { kbps_1080p30: u32 },
-}
-
 /// A soft limit we only warn about (we still compress the video).
 pub struct DurationWarning {
     pub max_s: f64,
@@ -28,7 +17,8 @@ pub struct Preset {
     pub tier: Option<&'static str>,
     /// Appended to output file names: `clip.mov` → `clip_discord.mp4`.
     pub suffix: &'static str,
-    pub budget: Budget,
+    /// Output must not exceed this many bytes.
+    pub max_bytes: u64,
     /// Limit on the *short* edge (720 = "720p"), so portrait and landscape videos are treated alike.
     pub max_short_edge: u32,
     pub max_fps: f64,
@@ -47,7 +37,7 @@ pub const PRESETS: &[Preset] = &[
         group: "Discord",
         tier: Some("Free"),
         suffix: "discord",
-        budget: Budget::MaxBytes(20 * MB),
+        max_bytes: 20 * MB,
         max_short_edge: 1080,
         max_fps: 60.0,
         audio_kbps: 128,
@@ -59,7 +49,7 @@ pub const PRESETS: &[Preset] = &[
         group: "Discord",
         tier: Some("Basic"),
         suffix: "discord-basic",
-        budget: Budget::MaxBytes(50 * MB),
+        max_bytes: 50 * MB,
         max_short_edge: 1080,
         max_fps: 60.0,
         audio_kbps: 160,
@@ -71,7 +61,7 @@ pub const PRESETS: &[Preset] = &[
         group: "Discord",
         tier: Some("Nitro"),
         suffix: "discord-nitro",
-        budget: Budget::MaxBytes(500 * MB),
+        max_bytes: 500 * MB,
         max_short_edge: 1080,
         max_fps: 60.0,
         audio_kbps: 192,
@@ -83,7 +73,7 @@ pub const PRESETS: &[Preset] = &[
         group: "X",
         tier: None,
         suffix: "x",
-        budget: Budget::MaxBytes(512 * MB),
+        max_bytes: 512 * MB,
         max_short_edge: 1080,
         max_fps: 60.0,
         audio_kbps: 128,
@@ -92,28 +82,18 @@ pub const PRESETS: &[Preset] = &[
             message: "Free X accounts allow videos up to 2:20",
         }),
     },
+    // WhatsApp Help Center ("How to send media"): 100 MB at 720p on a fast connection.
+    // 30 fps is our choice, not a documented limit: phones record at 30 and it leaves more bits per frame.
     Preset {
-        id: "instagram",
-        label: "Instagram",
-        group: "Instagram",
+        id: "whatsapp",
+        label: "WhatsApp",
+        group: "WhatsApp",
         tier: None,
-        suffix: "instagram",
-        budget: Budget::Quality { kbps_1080p30: 5_000 },
-        max_short_edge: 1080,
+        suffix: "whatsapp",
+        max_bytes: 100 * MB,
+        max_short_edge: 720,
         max_fps: 30.0,
         audio_kbps: 128,
-        duration_warning: None,
-    },
-    Preset {
-        id: "youtube",
-        label: "YouTube",
-        group: "YouTube",
-        tier: None,
-        suffix: "youtube",
-        budget: Budget::Quality { kbps_1080p30: 12_000 },
-        max_short_edge: 2160,
-        max_fps: 60.0,
-        audio_kbps: 192,
         duration_warning: None,
     },
 ];
@@ -135,9 +115,9 @@ pub struct PresetSummary {
     pub label: &'static str,
     pub group: &'static str,
     pub tier: Option<&'static str>,
-    /// The size limit, so the UI can mark it on the size meter. `None` for quality-based presets.
-    pub cap_bytes: Option<u64>,
-    /// Shown next to the destination: "20 MB" or "Best quality".
+    /// The size limit, so the UI can mark it on the size meter.
+    pub cap_bytes: u64,
+    /// Shown next to the destination, e.g. "20 MB".
     pub hint: String,
 }
 
@@ -145,14 +125,13 @@ pub struct PresetSummary {
 pub fn list_presets() -> Vec<PresetSummary> {
     PRESETS
         .iter()
-        .map(|p| {
-            // `match` is like a `switch` that the compiler checks covers every variant.
-            // It's an expression, so it can produce a value (here a tuple of two values).
-            let (cap_bytes, hint) = match p.budget {
-                Budget::MaxBytes(bytes) => (Some(bytes), format_mb(bytes)),
-                Budget::Quality { .. } => (None, "Best quality".to_string()),
-            };
-            PresetSummary { id: p.id, label: p.label, group: p.group, tier: p.tier, cap_bytes, hint }
+        .map(|p| PresetSummary {
+            id: p.id,
+            label: p.label,
+            group: p.group,
+            tier: p.tier,
+            cap_bytes: p.max_bytes,
+            hint: format_mb(p.max_bytes),
         })
         .collect()
 }

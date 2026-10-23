@@ -35,6 +35,6 @@ export function planSentence(plan: EncodePlan, info: VideoInfo, preset: PresetSu
   if (plan.targetFps !== null) changes.push(`${Math.round(plan.targetFps)} fps`);
 
   if (changes.length === 0) return "Keeps the full resolution and frame rate";
-  const fit = preset?.capBytes ? ` to fit ${preset.hint}` : ` for ${preset?.group ?? "this destination"}`;
+  const fit = preset ? ` to fit ${preset.hint}` : "";
   return `Lowered to ${changes.join(" and ")}${fit}`;
 }

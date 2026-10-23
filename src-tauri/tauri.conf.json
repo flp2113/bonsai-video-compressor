@@ -31,7 +31,7 @@
     "copyright": "Copyright (c) 2026 Felipe Guerzoni. MIT License.",
     "homepage": "https://github.com/flp2113/bonsai-video-compressor",
     "license": "MIT",
-    "shortDescription": "Compress videos to fit Discord, X, Instagram and YouTube",
+    "shortDescription": "Compress videos to fit Discord, X and WhatsApp",
     "longDescription": "Bonsai compresses a video to fit a destination's size limit, using your GPU's encoder. Drop a file on its window or right-click it in Explorer.",
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "resources": {

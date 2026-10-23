@@ -20,9 +20,9 @@ export interface PresetSummary {
   group: string;
   /** Option within a group, e.g. "Nitro"; null when the group has a single preset. */
   tier: string | null;
-  /** Size limit in bytes; null for quality-based presets (Instagram, YouTube). */
-  capBytes: number | null;
-  /** "20 MB" or "Best quality". */
+  /** Size limit in bytes. */
+  capBytes: number;
+  /** The size limit as text, e.g. "20 MB". */
   hint: string;
 }
 

@@ -229,7 +229,7 @@
         <h1>Reading video…</h1>
       {:else}
         <h1>Drop a video</h1>
-        <p class="muted">Bonsai shrinks it to fit Discord, X, Instagram or YouTube.</p>
+        <p class="muted">Bonsai shrinks it to fit Discord, X or WhatsApp.</p>
         <button class="secondary" onclick={chooseFile}>Choose a file</button>
         {#if error}
           <p class="error">{error}</p>

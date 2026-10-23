@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use crate::presets::{self, Budget, Preset};
+use crate::presets::{self, Preset};
 use crate::probe::VideoInfo;
 
 /// Fraction of the size cap we actually aim for: leaves room for the MP4 container and bitrate overshoot.
@@ -103,55 +103,43 @@ pub fn plan(info: &VideoInfo, preset: &Preset) -> Result<EncodePlan, String> {
     let (mut width, mut height) = fit_short_edge(info.width, info.height, preset.max_short_edge);
     let mut fps = source_fps.min(preset.max_fps);
 
-    let (video_kbps, audio_kbps) = match preset.budget {
-        Budget::MaxBytes(cap) => {
-            if info.size_bytes <= cap && is_compatible_as_is(info, preset, source_fps) {
-                return Ok(copy_plan(info, source_fps, warnings));
-            }
+    let cap = preset.max_bytes;
+    if info.size_bytes <= cap && is_compatible_as_is(info, preset, source_fps) {
+        return Ok(copy_plan(info, source_fps, warnings));
+    }
 
-            let usable_bytes = cap as f64 * SAFETY - OVERHEAD_BYTES;
-            let total_kbps = usable_bytes * 8.0 / 1000.0 / info.duration_s;
-            let audio = pick_audio_kbps(info, preset, total_kbps);
-            let video = total_kbps - audio;
+    let usable_bytes = cap as f64 * SAFETY - OVERHEAD_BYTES;
+    let total_kbps = usable_bytes * 8.0 / 1000.0 / info.duration_s;
+    let audio_kbps = pick_audio_kbps(info, preset, total_kbps);
+    let video_kbps = total_kbps - audio_kbps;
 
-            if video < MIN_VIDEO_KBPS {
-                let min_audio = if info.audio_codec.is_some() { MIN_AUDIO_KBPS } else { 0.0 };
-                let max_duration = usable_bytes * 8.0 / 1000.0 / (MIN_VIDEO_KBPS + min_audio);
-                return Err(format!(
-                    "Too long to fit in {}: the maximum is about {} for this preset",
-                    presets::format_mb(cap),
-                    format_duration(max_duration)
-                ));
-            }
+    if video_kbps < MIN_VIDEO_KBPS {
+        let min_audio = if info.audio_codec.is_some() { MIN_AUDIO_KBPS } else { 0.0 };
+        let max_duration = usable_bytes * 8.0 / 1000.0 / (MIN_VIDEO_KBPS + min_audio);
+        return Err(format!(
+            "Too long to fit in {}: the maximum is about {} for this preset",
+            presets::format_mb(cap),
+            format_duration(max_duration)
+        ));
+    }
 
-            // Too few bits for this many pixels? Halve the frame rate first (motion stays smooth enough
-            // at 30 fps), then step the resolution down the ladder.
-            // (The UI explains any lowered resolution/fps itself by comparing the plan with the source.)
-            while bits_per_pixel(video, width, height, fps) < MIN_BITS_PER_PIXEL {
-                if fps > 31.0 {
-                    fps = if fps >= 48.0 { fps / 2.0 } else { 30.0 };
-                } else if let Some(&next) = RESOLUTION_LADDER.iter().find(|&&s| s < width.min(height)) {
-                    (width, height) = fit_short_edge(width, height, next);
-                } else {
-                    break; // already at the smallest size; accept a softer picture
-                }
-            }
-            (video, audio)
+    // Too few bits for this many pixels? Halve the frame rate first (motion stays smooth enough
+    // at 30 fps), then step the resolution down the ladder.
+    // (The UI explains any lowered resolution/fps itself by comparing the plan with the source.)
+    while bits_per_pixel(video_kbps, width, height, fps) < MIN_BITS_PER_PIXEL {
+        if fps > 31.0 {
+            fps = if fps >= 48.0 { fps / 2.0 } else { 30.0 };
+        } else if let Some(&next) = RESOLUTION_LADDER.iter().find(|&&s| s < width.min(height)) {
+            (width, height) = fit_short_edge(width, height, next);
+        } else {
+            break; // already at the smallest size; accept a softer picture
         }
-        Budget::Quality { kbps_1080p30 } => {
-            let pixel_rate = width as f64 * height as f64 * fps;
-            let target = kbps_1080p30 as f64 * pixel_rate / (1920.0 * 1080.0 * 30.0);
-            let audio = pick_audio_kbps(info, preset, f64::INFINITY);
-            // Re-encoding can't add detail, so never spend more than the source did.
-            let source_video = info.bitrate_kbps as f64 - info.audio_bitrate_kbps.unwrap_or(0) as f64;
-            let video = target.min(source_video.max(MIN_VIDEO_KBPS));
+    }
 
-            if is_compatible_as_is(info, preset, source_fps) && source_video <= target {
-                return Ok(copy_plan(info, source_fps, warnings));
-            }
-            (video, audio)
-        }
-    };
+    // Re-encoding can't add detail, so never spend more than the source did. Matters for roomy caps
+    // (WhatsApp's 100 MB, Nitro's 500 MB), where the budget alone could make a short clip *bigger*.
+    let source_video_kbps = info.bitrate_kbps.saturating_sub(info.audio_bitrate_kbps.unwrap_or(0)) as f64;
+    let video_kbps = video_kbps.min(source_video_kbps.max(MIN_VIDEO_KBPS));
 
     let fps_lowered = fps < source_fps - 0.5;
 
@@ -271,20 +259,23 @@ mod tests {
     }
 
     #[test]
-    fn instagram_caps_frame_rate_and_resolution() {
-        let p = plan(&video(3840, 2160, 60.0, 30.0, 400_000_000), preset("instagram")).unwrap();
-        assert_eq!((p.width, p.height), (1920, 1080));
+    fn whatsapp_caps_to_720p30_under_100_mb() {
+        // 10 minutes of 1080p60 phone video.
+        let p = plan(&video(1920, 1080, 60.0, 600.0, 900_000_000), preset("whatsapp")).unwrap();
+        assert_eq!(p.mode, Mode::Encode);
+        assert!(p.width.min(p.height) <= 720, "{}x{}", p.width, p.height);
         assert_eq!(p.fps, 30.0);
-        assert_eq!(p.video_kbps, 5_000);
+        assert!(p.estimated_bytes <= 100_000_000, "estimated {} bytes", p.estimated_bytes);
     }
 
     #[test]
-    fn youtube_never_exceeds_source_bitrate() {
-        // 4K30 at ~10 Mbps: YouTube's 4K target (~48 Mbps) would be wasteful.
-        let v = video(3840, 2160, 30.0, 60.0, 75_000_000);
-        let p = plan(&v, preset("youtube")).unwrap();
-        assert!(p.video_kbps <= v.bitrate_kbps, "{} > {}", p.video_kbps, v.bitrate_kbps);
-        assert_eq!((p.width, p.height), (3840, 2160));
+    fn small_1080p_clip_is_still_downscaled_for_whatsapp() {
+        // Fits in 100 MB, but WhatsApp's limit is 720p, so it can't be copied as-is.
+        let p = plan(&video(1920, 1080, 30.0, 10.0, 10_000_000), preset("whatsapp")).unwrap();
+        assert_eq!(p.mode, Mode::Encode);
+        assert_eq!((p.width, p.height), (1280, 720));
+        // ~8 Mbps source: the 100 MB budget must not inflate it.
+        assert!(p.estimated_bytes <= 10_000_000, "estimated {} bytes", p.estimated_bytes);
     }
 
     #[test]

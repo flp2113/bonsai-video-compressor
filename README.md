@@ -5,7 +5,7 @@
 <h1 align="center">Bonsai Video Compressor</h1>
 
 <p align="center">
-  Shrink a video so it fits Discord, X, Instagram or YouTube. Right-click it, pick where it's going, done.
+  Shrink a video so it fits Discord, X or WhatsApp. Right-click it, pick where it's going, done.
 </p>
 
 <!-- Screenshot: add docs/screenshot.png and uncomment.
@@ -34,8 +34,7 @@ Output files are saved next to the original (`clip_discord.mp4`), or in a folder
 | Discord Nitro Basic | 50 MB | 1080p | 60 |
 | Discord Nitro | 500 MB | 1080p | 60 |
 | X / Twitter | 512 MB (warns above 2:20, the limit for free accounts) | 1080p | 60 |
-| Instagram | good quality, no size limit | 1080p | 30 |
-| YouTube | high quality, no size limit | 4K | 60 |
+| WhatsApp | 100 MB | 720p | 30 |
 
 Every output is H.264 + AAC in MP4, which plays everywhere. Videos are never upscaled, and phone videos keep
 their orientation.

@@ -7,7 +7,7 @@
 //! `bonsai.exe --preset discord-free "C:\clips\a.mp4"`. The single-instance plugin funnels all those launches
 //! into the one running app, which queues them (see `queue.rs`).
 
-use crate::presets::{Budget, PRESETS};
+use crate::presets::{format_mb, PRESETS};
 
 /// File types that get the menu. Keep in sync with `VIDEO_EXTENSIONS` in src/lib/types.ts.
 pub const VIDEO_EXTENSIONS: [&str; 9] = ["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "ts"];
@@ -49,10 +49,7 @@ pub fn entries(exe: &str) -> Vec<RegValue> {
     for (i, preset) in PRESETS.iter().enumerate() {
         // Explorer sorts entries by key name, so a number prefix keeps the presets table order.
         let key = format!(r"{CLASSES}\{SUBMENU_KEY}\shell\{:02}-{}", i + 1, preset.id);
-        let label = match preset.budget {
-            Budget::MaxBytes(bytes) => format!("{} ({})", preset.label, crate::presets::format_mb(bytes)),
-            Budget::Quality { .. } => preset.label.to_string(),
-        };
+        let label = format!("{} ({})", preset.label, format_mb(preset.max_bytes));
         out.push(reg(key.clone(), "MUIVerb", label));
         out.push(reg(key.clone(), "MultiSelectModel", "Player"));
         out.push(reg(format!(r"{key}\command"), "", format!("\"{exe}\" --preset {} \"%1\"", preset.id)));
@@ -60,11 +57,14 @@ pub fn entries(exe: &str) -> Vec<RegValue> {
     out
 }
 
-/// Writes the menu. Safe to call on every start: it just overwrites the same values (and fixes the exe path
+/// Writes the menu. Safe to call on every start: it rewrites the same values (and fixes the exe path
 /// if the app moved). The uninstaller removes the keys again (src-tauri/windows/hooks.nsh).
 #[cfg(windows)]
 pub fn register(exe: &str) -> windows_registry::Result<()> {
     let root = windows_registry::CURRENT_USER;
+    // Clear the submenu first so presets removed in an update (e.g. Instagram, YouTube) don't linger.
+    // `let _ =` ignores the result: on a first install there's nothing to remove, and that's fine.
+    let _ = root.remove_tree(format!(r"{CLASSES}\{SUBMENU_KEY}\shell"));
     for value in entries(exe) {
         root.create(&value.key)?.set_string(value.name, &value.value)?;
     }
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn size_capped_presets_show_their_limit() {
+    fn presets_show_their_size_limit() {
         let all = entries(EXE);
         let label = |id: &str| {
             all.iter()
@@ -136,7 +136,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(label("discord-free"), "Discord Free (20 MB)");
-        assert_eq!(label("instagram"), "Instagram");
+        assert_eq!(label("whatsapp"), "WhatsApp (100 MB)");
     }
 
     /// The uninstaller lists the keys by hand (NSIS can't read our Rust), so check it removes all of them.

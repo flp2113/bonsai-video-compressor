@@ -18,7 +18,7 @@ use tokio::sync::{oneshot, OnceCell};
 
 use crate::encoder::{self, ProgressLine, VideoEncoder};
 use crate::planner::{self, EncodePlan, Mode};
-use crate::presets::{self, Budget};
+use crate::presets;
 use crate::probe::VideoInfo;
 
 /// Most passes a job may take: the first encode plus two size-correcting retries.
@@ -156,10 +156,7 @@ pub async fn start_job(
     let plan = planner::plan(&info, preset)?;
     let output_dir = chosen_output_dir(app);
     let output = encoder::output_path(Path::new(&info.path), output_dir.as_deref(), preset.suffix, |p| p.exists());
-    let cap = match preset.budget {
-        Budget::MaxBytes(bytes) => Some(bytes),
-        Budget::Quality { .. } => None,
-    };
+    let cap = preset.max_bytes;
     let encoder = best_encoder(app).await;
 
     let jobs = app.state::<Jobs>();
@@ -197,7 +194,7 @@ struct Job {
     info: VideoInfo,
     plan: EncodePlan,
     output: String,
-    cap: Option<u64>,
+    cap: u64,
     encoder: VideoEncoder,
     /// A one-off job from the drop window (see `start_job`).
     single: bool,
@@ -229,16 +226,15 @@ async fn run_job(app: AppHandle, mut job: Job, outcome_sender: oneshot::Sender<J
         }
 
         let size = std::fs::metadata(&job.output).map(|m| m.len()).unwrap_or(0);
-        match job.cap {
-            // Too big (only possible when re-encoding: copies are only chosen when they already fit).
-            Some(cap) if size > cap && job.plan.mode == Mode::Encode => {
-                if pass >= MAX_PASSES {
-                    break Err((format!("Couldn't fit this video under {}", presets::format_mb(cap)), false));
-                }
-                job.plan.video_kbps = encoder::retry_video_kbps(&job.plan, size);
-                pass += 1;
+        // Too big (only possible when re-encoding: copies are only chosen when they already fit).
+        if size > job.cap && job.plan.mode == Mode::Encode {
+            if pass >= MAX_PASSES {
+                break Err((format!("Couldn't fit this video under {}", presets::format_mb(job.cap)), false));
             }
-            _ => break Ok(size),
+            job.plan.video_kbps = encoder::retry_video_kbps(&job.plan, size);
+            pass += 1;
+        } else {
+            break Ok(size);
         }
     };
 
